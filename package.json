@@ -13,7 +13,15 @@
     "shiki",
     "cli"
   ],
-  "homepage": "https://github.com/k1LoW/mo",
+  "homepage": "https://github.com/kongyo2/yome",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kongyo2/yome.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kongyo2/yome/issues"
+  },
+  "author": "k1LoW (original Go implementation), ported to Node.js",
   "license": "MIT",
   "type": "module",
   "bin": {
