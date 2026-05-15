@@ -82,9 +82,13 @@ export function httpRequestJson(
     const data =
       body !== undefined ? Buffer.from(JSON.stringify(body)) : Buffer.alloc(0);
     const parsed = new URL(url);
+    // Node's http.request expects an unbracketed host for IPv6 literals,
+    // but URL#hostname returns "[::1]". Strip the brackets so requests to
+    // http://[::1]:.../ work without ENOTFOUND.
+    const hostname = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
     const req = httpRequest(
       {
-        hostname: parsed.hostname,
+        hostname,
         port: parsed.port,
         path: parsed.pathname + parsed.search,
         method,

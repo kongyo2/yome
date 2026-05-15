@@ -17,14 +17,21 @@ describe("isLoopbackBind", () => {
     expect(isLoopbackBind("127.0.0.1")).toBe(true);
     expect(isLoopbackBind("127.1.2.3")).toBe(true);
   });
-  it("accepts ::1", () => {
+  it("accepts canonical IPv6 loopback", () => {
     expect(isLoopbackBind("::1")).toBe(true);
     expect(isLoopbackBind("0:0:0:0:0:0:0:1")).toBe(true);
+  });
+  it("accepts non-canonical IPv6 loopback spellings", () => {
+    expect(isLoopbackBind("::01")).toBe(true);
+    expect(isLoopbackBind("::001")).toBe(true);
+    expect(isLoopbackBind("0:0:0:0:0:0:0:01")).toBe(true);
+    expect(isLoopbackBind("0::1")).toBe(true);
   });
   it("rejects other addresses", () => {
     expect(isLoopbackBind("0.0.0.0")).toBe(false);
     expect(isLoopbackBind("192.168.1.1")).toBe(false);
     expect(isLoopbackBind("nothostname")).toBe(false);
+    expect(isLoopbackBind("::2")).toBe(false);
   });
 });
 

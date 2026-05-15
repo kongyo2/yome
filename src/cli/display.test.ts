@@ -12,6 +12,14 @@ describe("buildDeeplink", () => {
       "http://localhost:6275/docs?file=abc12345",
     );
   });
+  it("percent-encodes reserved characters in the group name", () => {
+    expect(buildDeeplink("localhost:6275", "100%", "abc12345", "default")).toBe(
+      "http://localhost:6275/100%25?file=abc12345",
+    );
+    expect(
+      buildDeeplink("localhost:6275", "foo bar", "abc12345", "default"),
+    ).toBe("http://localhost:6275/foo%20bar?file=abc12345");
+  });
 });
 
 describe("displayNames", () => {

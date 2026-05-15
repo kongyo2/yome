@@ -62,15 +62,11 @@ export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
     res.end("bad request");
     return;
   }
-  if (decoded.includes("..")) {
-    res.statusCode = 403;
-    res.end("forbidden");
-    return;
-  }
   const requested = join(FRONTEND_DIR, decoded);
 
-  // Ensure the resolved path stays within FRONTEND_DIR using a
-  // separator-aware boundary check.
+  // Boundary check via path resolution; this safely catches any
+  // `..` based traversal without false-rejecting legitimate names that
+  // happen to contain `..` mid-segment (e.g. `release..notes`).
   const baseAbs = resolve(FRONTEND_DIR);
   const requestedAbs = resolve(requested);
   if (requestedAbs !== baseAbs && !requestedAbs.startsWith(baseAbs + sep)) {

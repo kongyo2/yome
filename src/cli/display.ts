@@ -13,7 +13,7 @@ export function buildDeeplink(
   defaultGroup: string,
 ): string {
   if (groupName === defaultGroup) return `http://${addr}/?file=${fileID}`;
-  return `http://${addr}/${groupName}?file=${fileID}`;
+  return `http://${addr}/${encodeURIComponent(groupName)}?file=${fileID}`;
 }
 
 export function displayNames(paths: string[]): string[] {

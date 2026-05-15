@@ -139,7 +139,7 @@ export async function startServer(
         const url =
           opts.target === DefaultGroup
             ? `http://${opts.addr}`
-            : `http://${opts.addr}/${opts.target}`;
+            : `http://${opts.addr}/${encodeURIComponent(opts.target)}`;
         open(url).catch((err) =>
           logger.warn("could not open browser", { error: String(err) }),
         );

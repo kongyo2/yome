@@ -8,8 +8,16 @@ export function isLoopbackBind(bind: string): boolean {
   if (!v) return false;
   if (v === 4) return bind.startsWith("127.");
   if (v === 6) {
-    const lower = bind.toLowerCase();
-    return lower === "::1" || lower === "0:0:0:0:0:0:0:1";
+    // Normalize IPv6 via WHATWG URL parser so non-canonical loopback
+    // spellings like "::01", "0:0:0:0:0:0:0:01", or "0::1" all
+    // canonicalize to "[::1]" and pass the check.
+    try {
+      const normalized = new URL(`http://[${bind}]/`).hostname.toLowerCase();
+      return normalized === "[::1]";
+    } catch {
+      const lower = bind.toLowerCase();
+      return lower === "::1" || lower === "0:0:0:0:0:0:0:1";
+    }
   }
   return false;
 }

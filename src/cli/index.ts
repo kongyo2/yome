@@ -342,8 +342,14 @@ async function doClose(
   return { closed, errors };
 }
 
+interface PostFileError {
+  target: string;
+  message: string;
+}
+
 interface PostFileResult {
   entries: DeeplinkEntry[];
+  errors: PostFileError[];
 }
 
 async function postFiles(
@@ -352,6 +358,7 @@ async function postFiles(
   files: string[],
 ): Promise<PostFileResult> {
   const entries: DeeplinkEntry[] = [];
+  const errors: PostFileError[] = [];
   for (const f of files) {
     try {
       const resp = await httpRequestJson(
@@ -361,7 +368,12 @@ async function postFiles(
         PROBE_TIMEOUT_DEFAULT,
       );
       if (resp.status !== 200) {
+        const detail = resp.body.trim();
+        const message = detail
+          ? `failed to add "${f}": ${detail}`
+          : `failed to add "${f}": HTTP ${resp.status}`;
         logger.warn("failed to add file", { path: f, status: resp.status });
+        errors.push({ target: f, message });
         continue;
       }
       const entry = JSON.parse(resp.body) as { id: string; path: string };
@@ -370,10 +382,12 @@ async function postFiles(
         path: entry.path,
       });
     } catch (err) {
+      const message = `failed to add "${f}": ${(err as Error).message}`;
       logger.warn("failed to post file", { path: f, error: String(err) });
+      errors.push({ target: f, message });
     }
   }
-  return { entries };
+  return { entries, errors };
 }
 
 async function postPatterns(
@@ -382,6 +396,7 @@ async function postPatterns(
   patterns: string[],
 ): Promise<PostFileResult> {
   const entries: DeeplinkEntry[] = [];
+  const errors: PostFileError[] = [];
   for (const pat of patterns) {
     try {
       const resp = await httpRequestJson(
@@ -391,10 +406,15 @@ async function postPatterns(
         PROBE_TIMEOUT_DEFAULT,
       );
       if (resp.status !== 200) {
+        const detail = resp.body.trim();
+        const message = detail
+          ? `failed to add pattern "${pat}": ${detail}`
+          : `failed to add pattern "${pat}": HTTP ${resp.status}`;
         logger.warn("failed to add pattern", {
           pattern: pat,
           status: resp.status,
         });
+        errors.push({ target: pat, message });
         continue;
       }
       const data = JSON.parse(resp.body) as {
@@ -408,13 +428,15 @@ async function postPatterns(
         });
       }
     } catch (err) {
+      const message = `failed to add pattern "${pat}": ${(err as Error).message}`;
       logger.warn("failed to post pattern", {
         pattern: pat,
         error: String(err),
       });
+      errors.push({ target: pat, message });
     }
   }
-  return { entries };
+  return { entries, errors };
 }
 
 async function postUploadedFile(
@@ -621,10 +643,18 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     }
   }
 
-  // Try adding to existing server first
+  // Try adding to existing server first. Only fall through to startup when
+  // the probe itself fails (no server running). Errors from the subsequent
+  // API calls must surface so users actually see "binary file rejected"
+  // type problems instead of silently spawning a fresh server.
   if (stdinData || files.length > 0 || patterns.length > 0) {
+    let probed: Awaited<ReturnType<typeof probeServer>> | null = null;
     try {
-      const probed = await probeServer(addr, PROBE_TIMEOUT_FAST);
+      probed = await probeServer(addr, PROBE_TIMEOUT_FAST);
+    } catch {
+      probed = null;
+    }
+    if (probed !== null) {
       const isNewGroup = !probed.groups.includes(flags.target);
       const deeplinks: DeeplinkEntry[] = [];
 
@@ -657,10 +687,12 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
         throw stdinUploadErr;
       }
 
-      let added = files.length + patterns.length;
+      const succeededFiles = pf.entries.length;
+      const succeededPatterns = pp.entries.length > 0 ? patterns.length : 0;
+      let added = pf.entries.length + succeededPatterns;
       if (stdinData && !stdinUploadErr) added++;
       logger.info("added to existing server", {
-        files: files.length,
+        files: succeededFiles,
         patterns: patterns.length,
         stdin: stdinData != null,
         addr,
@@ -668,10 +700,17 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       emitServeOutput(addr, deeplinks, false, flags.json);
       process.stderr.write(`mo: added ${added} item(s) to http://${addr}\n`);
 
+      // Surface real per-file failures.
+      for (const e of pf.errors) {
+        process.stderr.write(`mo: ${e.message}\n`);
+      }
+      for (const e of pp.errors) {
+        process.stderr.write(`mo: ${e.message}\n`);
+      }
+
       if (isNewGroup || flags.open) await openBrowser(addr, flags);
+      if (pf.errors.length > 0 || pp.errors.length > 0) return 1;
       return 0;
-    } catch {
-      // no server, fall through to startup
     }
   }
 
@@ -768,7 +807,7 @@ async function openBrowser(addr: string, flags: Flags): Promise<void> {
   const url =
     flags.target === DefaultGroup
       ? `http://${addr}`
-      : `http://${addr}/${flags.target}`;
+      : `http://${addr}/${encodeURIComponent(flags.target)}`;
   try {
     await open(url);
   } catch (err) {
