@@ -1,8 +1,6 @@
-import { Command } from "commander";
-import { statSync } from "node:fs";
+import { Command, Option as CommanderOption } from "commander";
 import { readdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { isIP } from "node:net";
 import pc from "picocolors";
 import open from "open";
 import {
@@ -10,7 +8,7 @@ import {
   load as backupLoad,
   remove as backupRemove,
 } from "../backup/index.js";
-import { logger, logDir, setup as setupLogfile } from "../logfile/index.js";
+import { logger, setup as setupLogfile, logDir } from "../logfile/index.js";
 import { DefaultGroup, resolveGroupName } from "../server/group.js";
 import { Version, Revision, Name } from "../version.js";
 import {
@@ -36,6 +34,12 @@ import {
   writeRestoreFile,
 } from "./server-runner.js";
 import { spawnDetached } from "./background.js";
+import {
+  filterValidRestoreData,
+  isLoopbackBind,
+  mapFromRecord,
+  mergeGroups,
+} from "./helpers.js";
 import type { RestoreData } from "../backup/index.js";
 
 const DEFAULT_PORT = 6275;
@@ -58,18 +62,6 @@ interface Flags {
   clear: boolean;
   json: boolean;
   dangerouslyAllowRemoteAccess: boolean;
-}
-
-function isLoopbackBind(bind: string): boolean {
-  if (bind === "localhost") return true;
-  const v = isIP(bind);
-  if (!v) return false;
-  if (v === 4) return bind.startsWith("127.");
-  if (v === 6) {
-    const lower = bind.toLowerCase();
-    return lower === "::1" || lower === "0:0:0:0:0:0:0:1";
-  }
-  return false;
 }
 
 async function promptYesNo(
@@ -446,63 +438,6 @@ async function postUploadedFile(
     path: "",
     name: entry.name,
   };
-}
-
-function mergeGroups(
-  base: Map<string, string[]>,
-  additional: Map<string, string[]>,
-): Map<string, string[]> {
-  const merged = new Map<string, string[]>();
-  for (const [g, items] of base) merged.set(g, [...items]);
-  for (const [g, items] of additional) {
-    const list = merged.get(g) ?? [];
-    const seen = new Set(list);
-    for (const v of items) {
-      if (!seen.has(v)) {
-        list.push(v);
-        seen.add(v);
-      }
-    }
-    merged.set(g, list);
-  }
-  return merged;
-}
-
-interface FilteredRestore {
-  files: Map<string, string[]>;
-  patterns: Map<string, string[]>;
-  uploadedFiles: Array<{ name: string; content: string; group: string }>;
-}
-
-function filterValidRestoreData(rd: RestoreData | null): FilteredRestore {
-  const files = new Map<string, string[]>();
-  const patterns = new Map<string, string[]>();
-  const uploaded = rd?.uploadedFiles ?? [];
-  if (!rd) return { files, patterns, uploadedFiles: uploaded };
-  for (const [group, paths] of Object.entries(rd.groups ?? {})) {
-    const list: string[] = [];
-    for (const p of paths) {
-      try {
-        statSync(p);
-        list.push(p);
-      } catch {
-        logger.info("skipping missing file from backup", { path: p });
-      }
-    }
-    if (list.length > 0) files.set(group, list);
-  }
-  for (const [group, pats] of Object.entries(rd.patterns ?? {})) {
-    patterns.set(group, [...pats]);
-  }
-  return { files, patterns, uploadedFiles: uploaded };
-}
-
-function mapFromRecord<T>(rec: Record<string, T[]>): Map<string, T[]> {
-  const m = new Map<string, T[]>();
-  for (const k of Object.keys(rec)) {
-    m.set(k, [...(rec[k] ?? [])]);
-  }
-  return m;
 }
 
 async function runMain(args: string[], flags: Flags): Promise<number> {
@@ -999,7 +934,12 @@ export async function runCli(): Promise<number> {
       "Shut down the running mo server on the specified port",
     )
     .option("--restart", "Restart the running mo server on the specified port")
-    .option("--restore <file>", "Restore state from file (internal use)")
+    .addOption(
+      new CommanderOption(
+        "--restore <file>",
+        "Restore state from file (internal use)",
+      ).hideHelp(),
+    )
     .option("--foreground", "Run mo server in foreground (do not background)")
     .option("--status", "Show status of all running mo servers")
     .option(

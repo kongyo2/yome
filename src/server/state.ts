@@ -41,6 +41,7 @@ type Subscriber = (e: SseEvent) => void;
 
 interface StateOptions {
   fileChangeDebounceMs?: number;
+  disableWatcher?: boolean;
 }
 
 function readFileHead(path: string): Buffer | null {
@@ -91,6 +92,10 @@ export class State {
   constructor(opts: StateOptions = {}) {
     this.fileChangeDebounceMs =
       opts.fileChangeDebounceMs ?? DEFAULT_DEBOUNCE_MS;
+    if (opts.disableWatcher) {
+      this.watcher = null;
+      return;
+    }
     try {
       this.watcher = chokidarWatch([], {
         ignoreInitial: true,

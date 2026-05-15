@@ -1,11 +1,14 @@
-import { createWriteStream, type WriteStream } from "node:fs";
 import {
+  appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   renameSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { stateHome } from "../xdg/index.js";
@@ -46,7 +49,6 @@ class RotatingWriter {
   filename: string;
   maxSize: number;
   maxBackups: number;
-  private stream: WriteStream;
   private size: number;
   private closed = false;
 
@@ -54,12 +56,14 @@ class RotatingWriter {
     this.filename = filename;
     this.maxSize = maxSize;
     this.maxBackups = maxBackups;
-    this.stream = this.openLogFile();
+    if (!existsSync(filename)) {
+      try {
+        writeFileSync(filename, "", { mode: 0o644, flag: "a" });
+      } catch {
+        // ignore
+      }
+    }
     this.size = this.statSize();
-  }
-
-  private openLogFile(): WriteStream {
-    return createWriteStream(this.filename, { flags: "a", mode: 0o644 });
   }
 
   private statSize(): number {
@@ -80,23 +84,20 @@ class RotatingWriter {
     if (this.size + len > this.maxSize) {
       this.rotate();
     }
-    this.stream.write(chunk);
-    this.size += len;
+    try {
+      appendFileSync(this.filename, chunk, { mode: 0o644 });
+      this.size += len;
+    } catch {
+      // best-effort
+    }
   }
 
   private rotate(): void {
-    try {
-      this.stream.end();
-    } catch {
-      // ignore
-    }
-
     try {
       unlinkSync(this.backupName(this.maxBackups));
     } catch {
       // best-effort
     }
-
     for (let i = this.maxBackups - 1; i >= 1; i--) {
       try {
         renameSync(this.backupName(i), this.backupName(i + 1));
@@ -104,25 +105,23 @@ class RotatingWriter {
         // ignore non-existent
       }
     }
-
     try {
       renameSync(this.filename, this.backupName(1));
     } catch {
       // ignore
     }
-
-    this.stream = this.openLogFile();
+    try {
+      const fd = openSync(this.filename, "a", 0o644);
+      closeSync(fd);
+    } catch {
+      // ignore
+    }
     this.size = 0;
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    try {
-      this.stream.end();
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -136,15 +135,6 @@ export function setup(port: number): () => void {
   cleanOldLogs(dir, MAX_AGE_MS);
 
   const filename = join(dir, `mo-${port}.log`);
-  if (!existsSync(filename)) {
-    // touch
-    try {
-      const fd = createWriteStream(filename, { flags: "a" });
-      fd.end();
-    } catch {
-      // ignore
-    }
-  }
   const writer = new RotatingWriter(filename, MAX_SIZE, MAX_BACKUPS);
   activeWriter = writer;
 
@@ -167,6 +157,7 @@ function writeJson(
   msg: string,
   fields: LogFields | undefined,
 ): void {
+  if (process.env["MO_LOG_SILENT"] === "1" && !activeWriter) return;
   const entry: Record<string, unknown> = {
     time: new Date().toISOString(),
     level,

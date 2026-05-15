@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Type check (root)
+        run: npx tsc --noEmit
+
+      - name: Type check (frontend)
+        run: cd frontend && npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Build frontend
+        run: cd frontend && npx vite build
+
+      - name: Build server
+        run: npx tsc -p tsconfig.build.json && node scripts/post-build.mjs
+
+      - name: Server tests
+        run: npx vitest run
+
+      - name: Frontend tests
+        run: cd frontend && npx vitest run
+
+      - name: Smoke test (CLI version)
+        run: node dist/bin/mo.js --version
