@@ -510,6 +510,22 @@ describe("CSRF protection on control-plane endpoints", () => {
     });
     expect(res.status).toBe(202);
   });
+
+  it("rejects POST /_/api/shutdown when Sec-Fetch-Site is same-site (sibling subdomain)", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-site" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects POST /_/api/shutdown when Origin is null (opaque origin)", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { origin: "null" },
+    });
+    expect(res.status).toBe(403);
+  });
 });
 
 describe("Debounced file change", () => {

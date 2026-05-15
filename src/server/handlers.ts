@@ -45,10 +45,16 @@ function textResponse(res: ServerResponse, status: number, body: string): void {
 function isSameOriginRequest(req: IncomingMessage): boolean {
   const sfs = req.headers["sec-fetch-site"];
   if (typeof sfs === "string") {
-    return sfs === "same-origin" || sfs === "same-site" || sfs === "none";
+    // "same-site" allows sibling subdomains under the same registrable
+    // domain — too loose for shutdown/restart. Only accept truly
+    // same-origin requests and "none" (direct navigation, non-browser).
+    return sfs === "same-origin" || sfs === "none";
   }
   const origin = req.headers["origin"];
-  if (typeof origin === "string" && origin !== "" && origin !== "null") {
+  if (typeof origin === "string" && origin !== "") {
+    // "null" is an opaque origin (data: URLs, sandboxed iframes, some
+    // redirected POSTs); treat it as cross-origin, not absent.
+    if (origin === "null") return false;
     const host = req.headers["host"];
     if (typeof host !== "string" || host === "") return false;
     try {
