@@ -29,7 +29,7 @@ export async function probeServer(
     timeoutMs,
   );
   if (!status || !status.version) {
-    throw new Error(`server on ${addr} is not a mo instance`);
+    throw new Error(`server on ${addr} is not a yome instance`);
   }
   return {
     status,

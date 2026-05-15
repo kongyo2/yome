@@ -25,7 +25,7 @@ vi.mock("./hooks/useFileDrop", () => ({
 }));
 
 vi.mock("./hooks/useScrollRestoration", () => ({
-  SCROLL_SESSION_KEY: "mo-scroll-context",
+  SCROLL_SESSION_KEY: "yome-scroll-context",
   useScrollRestoration: () => ({
     captureScrollPosition: () => {},
     onContentRendered: () => {},
@@ -106,19 +106,19 @@ describe("isTocOpenForFile", () => {
 });
 
 describe("formatTitle", () => {
-  it("returns `mo` when fileEntry is undefined", () => {
-    expect(formatTitle(undefined)).toBe("mo");
+  it("returns `yome` when fileEntry is undefined", () => {
+    expect(formatTitle(undefined)).toBe("yome");
   });
 
   it("returns `file name` when title is undefined", () => {
     expect(formatTitle({ name: "file.md", title: undefined })).toBe(
-      "file.md | mo",
+      "file.md | yome",
     );
   });
 
   it("returns `title - file name` when title is defined", () => {
     expect(formatTitle({ name: "file.md", title: "File Title" })).toBe(
-      "File Title - file.md | mo",
+      "File Title - file.md | yome",
     );
   });
 });

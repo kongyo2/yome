@@ -17,22 +17,25 @@ export interface RestoreData {
 }
 
 export function backupDir(): string {
-  return join(stateHome(), "mo", "backup");
+  return join(stateHome(), "yome", "backup");
 }
 
 export function backupPath(port: number): string {
-  return join(backupDir(), `mo-${port}.json`);
+  return join(backupDir(), `yome-${port}.json`);
 }
 
 export async function save(port: number, data: RestoreData): Promise<void> {
   const p = backupPath(port);
   const dir = dirname(p);
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
 
   const json = JSON.stringify(data);
-  const tmpName = join(dir, `mo-backup-${randomBytes(8).toString("hex")}.tmp`);
+  const tmpName = join(
+    dir,
+    `yome-backup-${randomBytes(8).toString("hex")}.tmp`,
+  );
   try {
-    await writeFile(tmpName, json, { encoding: "utf8", mode: 0o644 });
+    await writeFile(tmpName, json, { encoding: "utf8", mode: 0o600 });
     await rename(tmpName, p);
   } catch (err) {
     await rm(tmpName, { force: true });

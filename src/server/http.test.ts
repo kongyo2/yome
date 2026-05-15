@@ -12,7 +12,7 @@ let baseURL: string;
 let server: ReturnType<typeof createServer>;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "mo-http-"));
+  tmp = await mkdtemp(join(tmpdir(), "yome-http-"));
   state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
   server = createServer(state);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -470,6 +470,61 @@ describe("SPA fallback", () => {
   it("falls back to index.html for unknown SPA routes when frontend exists", async () => {
     const r = await get("/some/spa/route");
     expect([200, 404]).toContain(r.status);
+  });
+});
+
+describe("CSRF protection on control-plane endpoints", () => {
+  it("rejects POST /_/api/shutdown when Sec-Fetch-Site is cross-site", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects POST /_/api/restart when Sec-Fetch-Site is cross-site", async () => {
+    const res = await fetch(baseURL + "/_/api/restart", {
+      method: "POST",
+      headers: { "sec-fetch-site": "cross-site" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects POST /_/api/shutdown when Origin does not match Host", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { origin: "https://attacker.example" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("accepts POST /_/api/shutdown without Origin / Sec-Fetch-Site headers (CLI client)", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", { method: "POST" });
+    expect(res.status).toBe(202);
+  });
+
+  it("accepts POST /_/api/shutdown with same-origin Sec-Fetch-Site", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+    });
+    expect(res.status).toBe(202);
+  });
+
+  it("rejects POST /_/api/shutdown when Sec-Fetch-Site is same-site (sibling subdomain)", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-site" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects POST /_/api/shutdown when Origin is null (opaque origin)", async () => {
+    const res = await fetch(baseURL + "/_/api/shutdown", {
+      method: "POST",
+      headers: { origin: "null" },
+    });
+    expect(res.status).toBe(403);
   });
 });
 

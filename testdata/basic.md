@@ -21,7 +21,7 @@ This is a second paragraph with **bold**, *italic*, ~~strikethrough~~, and `inli
 
 ## Images
 
-![placeholder](https://placehold.co/300x100?text=mo+test)
+![placeholder](https://placehold.co/300x100?text=yome+test)
 
 ## Blockquote
 

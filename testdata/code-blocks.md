@@ -56,10 +56,10 @@ async function fetchFiles(): Promise<FileEntry[]> {
 #!/bin/bash
 set -euo pipefail
 
-echo "Building mo..."
+echo "Building yome..."
 cd internal/frontend && pnpm run build
 cd ../..
-go build -o mo .
+go build -o yome .
 echo "Done!"
 ```
 
@@ -67,7 +67,7 @@ echo "Done!"
 
 ```json
 {
-  "name": "mo",
+  "name": "yome",
   "dependencies": {
     "react": "^19.1.0",
     "react-markdown": "^10.1.0",
@@ -102,4 +102,4 @@ It should still be rendered in a monospace font.
 
 ## Inline Code
 
-Use `go build -o mo .` to build the binary. The config is in `internal/server/server.go`.
+Use `go build -o yome .` to build the binary. The config is in `internal/server/server.go`.

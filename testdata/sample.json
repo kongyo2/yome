@@ -1,5 +1,5 @@
 {
-  "name": "mo",
+  "name": "yome",
   "version": "0.1.0",
   "description": "Markdown viewer with live-reload",
   "features": ["syntax-highlighting", "live-reload", "tab-groups"],

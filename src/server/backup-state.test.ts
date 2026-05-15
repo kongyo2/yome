@@ -7,7 +7,7 @@ import { State } from "./state.js";
 let tmp: string;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "mo-backup-state-"));
+  tmp = mkdtempSync(join(tmpdir(), "yome-backup-state-"));
 });
 
 afterEach(() => {

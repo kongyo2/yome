@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
-export const SCROLL_SESSION_KEY = "mo-scroll-context";
+export const SCROLL_SESSION_KEY = "yome-scroll-context";
 
 interface ScrollContext {
   headingId: string | null;

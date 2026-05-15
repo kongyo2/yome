@@ -1,5 +1,5 @@
 {
-  "name": "@kongyo/mo",
+  "name": "@kongyo/yome",
   "version": "1.5.5",
   "description": "Markdown viewer that opens .md files in a browser with live-reload",
   "keywords": [
@@ -25,7 +25,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mo": "dist/bin/mo.js"
+    "yome": "dist/bin/yome.js"
   },
   "files": [
     "dist",
@@ -39,7 +39,7 @@
     "build": "npm run build:frontend && npm run build:server",
     "build:frontend": "cd frontend && vite build",
     "build:server": "tsc -p tsconfig.build.json && node scripts/post-build.mjs",
-    "dev": "npm run build:frontend && node --import tsx src/bin/mo.ts --foreground --port 16275",
+    "dev": "npm run build:frontend && node --import tsx src/bin/yome.ts --foreground --port 16275",
     "dev:frontend": "cd frontend && vite",
     "test": "vitest run && cd frontend && vitest run",
     "test:server": "vitest run",

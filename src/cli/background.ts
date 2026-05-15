@@ -7,19 +7,19 @@ const moduleFile = fileURLToPath(import.meta.url);
 
 function findEntryPoint(): { entry: string; useTsx: boolean } {
   // If we're already running from dist/, use the sibling bin.
-  // Otherwise (running via tsx from src/), spawn src/bin/mo.ts with tsx.
+  // Otherwise (running via tsx from src/), spawn src/bin/yome.ts with tsx.
   const dir = dirname(moduleFile);
   if (
     dir.includes(`${"/"}dist${"/"}`) ||
     dir.endsWith("/dist") ||
     dir.endsWith("/dist/cli")
   ) {
-    const distBin = pathResolve(dir, "..", "bin", "mo.js");
+    const distBin = pathResolve(dir, "..", "bin", "yome.js");
     if (existsSync(distBin)) return { entry: distBin, useTsx: false };
   }
-  const srcBin = pathResolve(dir, "..", "bin", "mo.ts");
+  const srcBin = pathResolve(dir, "..", "bin", "yome.ts");
   if (existsSync(srcBin)) return { entry: srcBin, useTsx: true };
-  const distBin = pathResolve(dir, "..", "bin", "mo.js");
+  const distBin = pathResolve(dir, "..", "bin", "yome.js");
   return { entry: distBin, useTsx: false };
 }
 

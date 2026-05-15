@@ -12,7 +12,7 @@ describe("backup", () => {
   let port: number;
 
   beforeEach(async () => {
-    tmp = await mkdtemp(join(tmpdir(), "mo-test-"));
+    tmp = await mkdtemp(join(tmpdir(), "yome-test-"));
     process.env["XDG_STATE_HOME"] = tmp;
     port = TEST_PORT_BASE + Math.floor(Math.random() * 1000);
   });

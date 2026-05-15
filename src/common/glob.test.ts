@@ -79,7 +79,7 @@ describe("expandGlob depth handling", () => {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { expandGlob } = await import("./glob.js");
-    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       writeFileSync(join(tmp, "a.md"), "");
       writeFileSync(join(tmp, "b.md"), "");
@@ -99,7 +99,7 @@ describe("expandGlob depth handling", () => {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { expandGlob } = await import("./glob.js");
-    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       mkdirSync(join(tmp, "a", "nested"), { recursive: true });
       writeFileSync(join(tmp, "a", "x.md"), "");
@@ -117,7 +117,7 @@ describe("expandGlob depth handling", () => {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { expandGlob } = await import("./glob.js");
-    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       mkdirSync(join(tmp, "deep", "nest"), { recursive: true });
       writeFileSync(join(tmp, "deep", "nest", "z.md"), "");

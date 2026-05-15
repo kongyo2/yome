@@ -13,13 +13,13 @@ import {
 import { join } from "node:path";
 import { stateHome } from "../xdg/index.js";
 
-const LOG_FILE_PREFIX = "mo-";
+const LOG_FILE_PREFIX = "yome-";
 const MAX_SIZE = 10 * 1024 * 1024;
 const MAX_BACKUPS = 3;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function logDir(): string {
-  return join(stateHome(), "mo", "log");
+  return join(stateHome(), "yome", "log");
 }
 
 function cleanOldLogs(dir: string, ageMs: number): void {
@@ -134,7 +134,7 @@ export function setup(port: number): () => void {
   mkdirSync(dir, { recursive: true });
   cleanOldLogs(dir, MAX_AGE_MS);
 
-  const filename = join(dir, `mo-${port}.log`);
+  const filename = join(dir, `yome-${port}.log`);
   const writer = new RotatingWriter(filename, MAX_SIZE, MAX_BACKUPS);
   activeWriter = writer;
 
@@ -157,7 +157,7 @@ function writeJson(
   msg: string,
   fields: LogFields | undefined,
 ): void {
-  if (process.env["MO_LOG_SILENT"] === "1" && !activeWriter) return;
+  if (process.env["YOME_LOG_SILENT"] === "1" && !activeWriter) return;
   const entry: Record<string, unknown> = {
     time: new Date().toISOString(),
     level,

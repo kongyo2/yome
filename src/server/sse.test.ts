@@ -12,7 +12,7 @@ let baseURL: string;
 let server: ReturnType<typeof createServer>;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "mo-sse-"));
+  tmp = await mkdtemp(join(tmpdir(), "yome-sse-"));
   state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
   server = createServer(state);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

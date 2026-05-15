@@ -159,7 +159,10 @@ export async function readRestoreFile(path: string): Promise<RestoreData> {
 }
 
 export async function writeRestoreFile(data: RestoreData): Promise<string> {
-  const p = join(tmpdir(), `mo-restore-${randomBytes(8).toString("hex")}.json`);
-  await fsWriteFile(p, JSON.stringify(data));
+  const p = join(
+    tmpdir(),
+    `yome-restore-${randomBytes(8).toString("hex")}.json`,
+  );
+  await fsWriteFile(p, JSON.stringify(data), { mode: 0o600 });
   return p;
 }
