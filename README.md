@@ -1,7 +1,7 @@
 # yome
 
 [![ci](https://github.com/kongyo2/yome/actions/workflows/ci.yml/badge.svg)](https://github.com/kongyo2/yome/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/@kongyo/yome.svg)](https://www.npmjs.com/package/@kongyo/yome)
+[![npm version](https://img.shields.io/npm/v/@kongyo2/yome.svg)](https://www.npmjs.com/package/@kongyo2/yome)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `yome` は [k1LoW/mo](https://github.com/k1LoW/mo) の Node.js 移植版です。`.md` ファイルをブラウザで開き、保存と同時にライブリロードして表示する Markdown ビューアです。
@@ -33,10 +33,10 @@
 
 ```bash
 # グローバルインストール
-npm install -g @kongyo/yome
+npm install -g @kongyo2/yome
 
 # あるいは都度実行
-npx @kongyo/yome README.md
+npx @kongyo2/yome README.md
 ```
 
 ## 使い方
