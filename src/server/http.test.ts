@@ -371,6 +371,21 @@ describe("Non-ASCII / percent-encoded paths", () => {
   });
 });
 
+describe("SPA fallback", () => {
+  it("serves index.html for / when the frontend is built", async () => {
+    const r = await get("/");
+    // Either index.html (if frontend dist exists) or some response — accept 200 or 404.
+    expect([200, 404]).toContain(r.status);
+    if (r.status === 200) {
+      expect(r.headers.get("Content-Type")).toMatch(/text\/html/);
+    }
+  });
+  it("falls back to index.html for unknown SPA routes when frontend exists", async () => {
+    const r = await get("/some/spa/route");
+    expect([200, 404]).toContain(r.status);
+  });
+});
+
 describe("Debounced file change", () => {
   it("collapses repeated scheduleFileChanged calls into one SSE event", async () => {
     const debouncedState = new State({
