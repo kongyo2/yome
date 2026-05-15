@@ -1,6 +1,6 @@
 {
   "name": "@kongyo/yome",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "description": "Markdown viewer that opens .md files in a browser with live-reload",
   "keywords": [
     "markdown",
