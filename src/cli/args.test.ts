@@ -90,6 +90,20 @@ describe("resolveArgs", () => {
       join(tmp, "10.md"),
     ]);
   });
+
+  it("mixes directories and individual files in one call", async () => {
+    mkdirSync(join(tmp, "docs"), { recursive: true });
+    writeFileSync(join(tmp, "docs", "a.md"), "");
+    const standalone = join(tmp, "standalone.md");
+    writeFileSync(standalone, "");
+    const { files, patterns } = await resolveArgs(
+      [join(tmp, "docs"), standalone],
+      false,
+      false,
+    );
+    expect(patterns).toEqual([]);
+    expect(files.sort()).toEqual([join(tmp, "docs", "a.md"), standalone].sort());
+  });
 });
 
 describe("resolveUnwatchArgs", () => {

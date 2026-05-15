@@ -453,7 +453,8 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   }
 
   const bind = flags.bind.replace(/^\[/, "").replace(/\]$/, "");
-  const addr = `${bind}:${flags.port}`;
+  // Use bracketed form for IPv6 in URLs (e.g. [::1]:6275).
+  const addr = bind.includes(":") ? `[${bind}]:${flags.port}` : `${bind}:${flags.port}`;
 
   if (flags.clear) {
     let wasServerRunning = false;
