@@ -1,0 +1,138 @@
+# yome
+
+[![ci](https://github.com/kongyo2/yome/actions/workflows/ci.yml/badge.svg)](https://github.com/kongyo2/yome/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@kongyo/yome.svg)](https://www.npmjs.com/package/@kongyo/yome)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+`yome` は [k1LoW/mo](https://github.com/k1LoW/mo) の Node.js 移植版です。`.md` ファイルをブラウザで開き、保存と同時にライブリロードして表示する Markdown ビューアです。
+
+オリジナルの Go 実装の挙動を尊重しつつ、npm から `npx` で気軽に呼び出せるよう Node.js + React で書き直しています。
+
+## 特徴
+
+- **ライブリロード**: ファイルを保存するとブラウザが即座に再レンダリング
+- **単一サーバー方式**: 既定ポート `6275` を共有し、後続の `yome` 呼び出しは既存セッションにファイルを追加する
+- **グループ (タブ)**: `--target` で名前付きグループに分け、URL とサイドバーを分離
+- **Watch モード**: ディレクトリや glob パターンを監視し、新規ファイルも自動で取り込む
+- **stdin 入力**: パイプから渡した Markdown もその場でレンダリング
+- **セッション復元**: サーバー停止後も次回起動時に開いていたファイルを自動で復元
+- **リッチなレンダリング**:
+  - GitHub Flavored Markdown
+  - [Mermaid](https://mermaid.js.org/) 図 (フローチャート、シーケンス、ガント、Git グラフなど)
+  - [KaTeX](https://katex.org/) 数式
+  - [Shiki](https://shiki.style/) によるシンタックスハイライト
+  - GitHub Alerts (`> [!NOTE]` など)
+  - フロントマター対応
+
+## 必要要件
+
+- Node.js `>= 20.10.0`
+- 対応プラットフォーム: Linux, macOS
+
+## インストール
+
+```bash
+# グローバルインストール
+npm install -g @kongyo/yome
+
+# あるいは都度実行
+npx @kongyo/yome README.md
+```
+
+## 使い方
+
+```bash
+# 単一ファイルを開く
+yome README.md
+
+# 複数ファイルと glob
+yome README.md CHANGELOG.md docs/*.md
+
+# 名前付きグループで開く (URL 例: http://localhost:6275/design)
+yome spec.md --target design
+
+# ポート変更
+yome draft.md --port 6276
+
+# stdin から読む
+cat notes.md | yome
+some-command | yome --target output
+
+# ディレクトリを再帰的に watch
+yome -w -R docs/
+```
+
+### サーバー操作
+
+```bash
+yome --status              # 起動中の yome サーバー一覧を表示
+yome --shutdown            # サーバーを停止
+yome --restart             # 状態を保ったまま再起動
+yome --clear               # 保存済みセッションを破棄
+yome --close path/to.md    # 指定ファイルだけグループから外す
+yome --unwatch docs/       # watch パターンを解除
+```
+
+### 主なオプション
+
+| オプション                          | 説明                                            |
+| ----------------------------------- | ----------------------------------------------- |
+| `-t, --target <name>`               | グループ名 (既定: `default`)                    |
+| `-p, --port <number>`               | ポート番号 (既定: `6275`)                       |
+| `-b, --bind <addr>`                 | バインドアドレス (既定: `localhost`)            |
+| `-w, --watch`                       | ディレクトリ / glob を watch パターンとして登録 |
+| `-R, --recursive`                   | サブディレクトリも再帰的に対象にする            |
+| `--open` / `--no-open`              | ブラウザの自動オープン制御                      |
+| `--foreground`                      | サーバーをフォアグラウンドで動かす              |
+| `--json`                            | 出力を JSON 形式で標準出力に流す                |
+| `--dangerously-allow-remote-access` | 非ループバックバインド時の警告を抑止            |
+
+`yome --help` で全オプションが確認できます。
+
+## セキュリティに関する注意
+
+`--bind` に `0.0.0.0` などの非ループバックアドレスを指定すると、`yome` には認証機構がないためネットワーク上の任意のクライアントから次のことが可能になります:
+
+- 当該ユーザーで読めるファイルの閲覧
+- glob パターンによるファイルシステムの探索
+- サーバーの停止 / 再起動
+
+信頼できないネットワークでは使用しないでください。実行時にも警告と確認プロンプトが表示されます。
+
+## 開発
+
+```bash
+git clone https://github.com/kongyo2/yome.git
+cd yome
+npm ci
+cd frontend && npm ci && cd ..
+
+# 開発サーバー
+npm run dev
+
+# テスト・型チェック・lint
+npm test
+npm run typecheck
+npm run lint
+
+# ビルド
+npm run build
+```
+
+ソースは以下のように分かれています:
+
+- `src/cli/` — CLI のエントリと引数解決
+- `src/server/` — HTTP サーバー、SSE、ファイル監視
+- `src/backup/` — セッション復元用の状態保存
+- `frontend/` — Vite + React の SPA
+
+設計方針は [`CLAUDE.md`](CLAUDE.md) に記載のとおり、関心の分離・状態とロジックの分離・コントラクト層 (API/型) の厳密な定義を重視しています。
+
+## ライセンス
+
+MIT License。
+
+- オリジナル Go 実装 © [k1LoW](https://github.com/k1LoW) — <https://github.com/k1LoW/mo>
+- Node.js 移植版 © kongyo2
+
+詳細は [`LICENSE`](LICENSE) を参照してください。
