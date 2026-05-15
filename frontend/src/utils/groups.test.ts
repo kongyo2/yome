@@ -77,6 +77,16 @@ describe("parseGroupFromPath", () => {
   it("handles path without leading slash", () => {
     expect(parseGroupFromPath("notes")).toBe("notes");
   });
+
+  it("decodes percent-encoded path segments", () => {
+    expect(parseGroupFromPath("/api%2Fdocs")).toBe("api/docs");
+    expect(parseGroupFromPath("/foo%20bar")).toBe("foo bar");
+    expect(parseGroupFromPath("/%E6%97%A5%E6%9C%AC")).toBe("日本");
+  });
+
+  it("falls back to raw segment for malformed percent-encoding", () => {
+    expect(parseGroupFromPath("/%E0%A4%A")).toBe("%E0%A4%A");
+  });
 });
 
 describe("groupToPath", () => {
@@ -86,6 +96,13 @@ describe("groupToPath", () => {
 
   it("returns /name for named group", () => {
     expect(groupToPath("design")).toBe("/design");
+  });
+
+  it("percent-encodes special chars while preserving slashes", () => {
+    expect(groupToPath("foo bar")).toBe("/foo%20bar");
+    expect(groupToPath("api/docs")).toBe("/api/docs");
+    expect(groupToPath("100%")).toBe("/100%25");
+    expect(groupToPath("日本")).toBe("/%E6%97%A5%E6%9C%AC");
   });
 });
 

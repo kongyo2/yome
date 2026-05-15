@@ -153,6 +153,22 @@ describe("POST /_/api/groups/:group/files/upload", () => {
     });
     expect(r.status).toBe(400);
   });
+
+  it("rejects missing content with a 400 (not a 500)", async () => {
+    const r = await postJson("/_/api/groups/default/files/upload", {
+      name: "x.md",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatch(/content/i);
+  });
+
+  it("rejects non-string content with a 400", async () => {
+    const r = await postJson("/_/api/groups/default/files/upload", {
+      name: "x.md",
+      content: 12345,
+    });
+    expect(r.status).toBe(400);
+  });
 });
 
 describe("GET /_/api/groups", () => {

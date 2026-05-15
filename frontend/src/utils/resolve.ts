@@ -9,12 +9,17 @@ function rawBasePath(group: string, fileId: string): string {
   return `/_/api/groups/${encodeURIComponent(group)}/files/${fileId}/raw`;
 }
 
+// Detects an absolute URI: starts with a scheme (RFC 3986) like
+// `http:`, `https:`, `mailto:`, `tel:`, `ftp:`, `data:`, etc., or a
+// protocol-relative `//` reference.
+const ABSOLUTE_URI_RE = /^[a-z][a-z0-9+.-]*:|^\/\//i;
+
 export function resolveLink(
   href: string | undefined,
   group: string,
   fileId: string,
 ): LinkResolution {
-  if (!href || href.startsWith("http://") || href.startsWith("https://")) {
+  if (!href || ABSOLUTE_URI_RE.test(href)) {
     return { type: "external" };
   }
   if (href.startsWith("#")) {
@@ -36,7 +41,9 @@ export function resolveImageSrc(
   group: string,
   fileId: string,
 ): string | undefined {
-  if (src && !src.startsWith("http://") && !src.startsWith("https://")) {
+  // Pass through absolute URIs (http/https/data/etc.) and protocol-relative
+  // references; only rewrite genuine relative paths to the raw-asset API.
+  if (src && !ABSOLUTE_URI_RE.test(src)) {
     return `${rawBasePath(group, fileId)}/${src}`;
   }
   return src;

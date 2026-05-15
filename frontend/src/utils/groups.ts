@@ -11,12 +11,22 @@ export function allFileIds(groups: Group[]): Set<string> {
 }
 
 export function parseGroupFromPath(pathname: string): string {
-  const path = pathname.replace(/^\//, "").replace(/\/$/, "");
-  return path || "default";
+  const raw = pathname.replace(/^\//, "").replace(/\/$/, "");
+  if (raw === "") return "default";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    // Malformed percent-encoding — fall back to raw segment so the UI
+    // still renders something sensible instead of crashing.
+    return raw;
+  }
 }
 
 export function groupToPath(groupName: string): string {
-  return groupName === "default" ? "/" : `/${groupName}`;
+  if (groupName === "default") return "/";
+  // Encode each path segment so names containing %, /, or unicode survive
+  // a round trip through the browser address bar and the backend router.
+  return "/" + groupName.split("/").map(encodeURIComponent).join("/");
 }
 
 export function buildFileUrl(groupName: string, fileId: string): string {

@@ -156,10 +156,15 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       }
       return textResponse(res, 400, (err as Error).message);
     }
+    if (typeof body.content !== "string") {
+      return textResponse(res, 400, "missing or invalid 'content' field");
+    }
+    if (typeof body.name !== "string" || body.name === "") {
+      return textResponse(res, 400, "missing file name");
+    }
     if (Buffer.byteLength(body.content) > MAX_CONTENT_BYTES) {
       return textResponse(res, 413, "file too large (max 10MB)");
     }
-    if (!body.name) return textResponse(res, 400, "missing file name");
     const entry = state.addUploadedFile(body.name, body.content, group);
     jsonResponse(res, 200, stripContent(entry));
   }

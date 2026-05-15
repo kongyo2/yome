@@ -20,6 +20,30 @@ describe("resolveLink", () => {
     });
   });
 
+  it("returns external for mailto: links", () => {
+    expect(resolveLink("mailto:user@example.com", "default", "a")).toEqual({
+      type: "external",
+    });
+  });
+
+  it("returns external for tel: links", () => {
+    expect(resolveLink("tel:+1-555-0123", "default", "a")).toEqual({
+      type: "external",
+    });
+  });
+
+  it("returns external for ftp: links", () => {
+    expect(resolveLink("ftp://ftp.example.com/file", "default", "a")).toEqual({
+      type: "external",
+    });
+  });
+
+  it("returns external for protocol-relative URLs", () => {
+    expect(resolveLink("//cdn.example.com/asset.png", "default", "a")).toEqual({
+      type: "external",
+    });
+  });
+
   it("returns hash for anchor-only links", () => {
     expect(resolveLink("#section", "default", "a")).toEqual({ type: "hash" });
   });
@@ -129,6 +153,18 @@ describe("resolveImageSrc", () => {
   it("passes through https:// URLs", () => {
     expect(resolveImageSrc("https://example.com/img.png", "default", "a")).toBe(
       "https://example.com/img.png",
+    );
+  });
+
+  it("passes through data: URIs", () => {
+    expect(resolveImageSrc("data:image/png;base64,AAA", "default", "a")).toBe(
+      "data:image/png;base64,AAA",
+    );
+  });
+
+  it("passes through protocol-relative URLs", () => {
+    expect(resolveImageSrc("//cdn.example.com/x.png", "default", "a")).toBe(
+      "//cdn.example.com/x.png",
     );
   });
 
