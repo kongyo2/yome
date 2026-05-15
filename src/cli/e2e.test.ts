@@ -73,7 +73,7 @@ describe("yome CLI", () => {
   it("--version prints the version", () => {
     const r = runYome(["--version"]);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/1\.5\.5/);
+    expect(r.stdout).toMatch(/1\.5\.6/);
   });
 
   it("--help prints usage", () => {
@@ -159,7 +159,7 @@ describe("yome CLI", () => {
           version: string;
           groups: Array<{ name: string; files: Array<{ name: string }> }>;
         };
-        expect(status.version).toBe("1.5.5");
+        expect(status.version).toBe("1.5.6");
         const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
         expect(names).toContain("smoke.md");
 
