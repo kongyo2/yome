@@ -65,10 +65,18 @@ export async function expandGlob(
 
   const isRecursive = rel.includes("**");
   const matcher = picomatch(rel, { dot: false, nocase: false });
+  // For non-recursive patterns the maximum directory depth that can still
+  // produce a match is (number of '/' in pattern). e.g. "*.md" → 0, so we
+  // never descend; "a/*.md" → 1, so we descend exactly one level.
+  const maxDirDepth = isRecursive ? Infinity : rel.split("/").length - 1;
 
   const results: string[] = [];
 
-  async function walk(dir: string, relDir: string): Promise<void> {
+  async function walk(
+    dir: string,
+    relDir: string,
+    depth: number,
+  ): Promise<void> {
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -79,11 +87,8 @@ export async function expandGlob(
       const childRel = relDir === "" ? e.name : `${relDir}/${e.name}`;
       const childAbs = join(dir, e.name);
       if (e.isDirectory()) {
-        if (isRecursive) {
-          await walk(childAbs, childRel);
-        } else {
-          // Non-recursive: still descend if pattern is multi-level
-          await walk(childAbs, childRel);
+        if (depth < maxDirDepth) {
+          await walk(childAbs, childRel, depth + 1);
         }
         if (!filesOnly && matcher(childRel)) {
           results.push(childAbs);
@@ -97,7 +102,7 @@ export async function expandGlob(
   }
 
   try {
-    await walk(base, "");
+    await walk(base, "", 0);
   } catch {
     // ignore
   }
@@ -115,9 +120,11 @@ export function expandGlobSync(
 function globSyncWalk(base: string, rel: string, opts: GlobOptions): string[] {
   const filesOnly = opts.filesOnly ?? true;
   const matcher = picomatch(rel, { dot: false, nocase: false });
+  const isRecursive = rel.includes("**");
+  const maxDirDepth = isRecursive ? Infinity : rel.split("/").length - 1;
   const results: string[] = [];
 
-  function walk(dir: string, relDir: string): void {
+  function walk(dir: string, relDir: string, depth: number): void {
     let entries: import("node:fs").Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
@@ -128,7 +135,9 @@ function globSyncWalk(base: string, rel: string, opts: GlobOptions): string[] {
       const childRel = relDir === "" ? e.name : `${relDir}/${e.name}`;
       const childAbs = join(dir, e.name);
       if (e.isDirectory()) {
-        walk(childAbs, childRel);
+        if (depth < maxDirDepth) {
+          walk(childAbs, childRel, depth + 1);
+        }
         if (!filesOnly && matcher(childRel)) {
           results.push(childAbs);
         }
@@ -147,7 +156,7 @@ function globSyncWalk(base: string, rel: string, opts: GlobOptions): string[] {
       }
     }
   }
-  walk(base, "");
+  walk(base, "", 0);
   return results;
 }
 

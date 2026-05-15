@@ -71,3 +71,60 @@ describe("sortPathsNatural", () => {
     expect(arr).toEqual(["foo1.md", "foo2.md", "foo10.md"]);
   });
 });
+
+describe("expandGlob depth handling", () => {
+  it("does not descend into subdirectories for single-level patterns", async () => {
+    const { mkdtempSync, rmSync, mkdirSync, writeFileSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { expandGlob } = await import("./glob.js");
+    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    try {
+      writeFileSync(join(tmp, "a.md"), "");
+      writeFileSync(join(tmp, "b.md"), "");
+      mkdirSync(join(tmp, "deep", "nest"), { recursive: true });
+      writeFileSync(join(tmp, "deep", "c.md"), "");
+      writeFileSync(join(tmp, "deep", "nest", "d.md"), "");
+      const results = await expandGlob(tmp, "*.md", { filesOnly: true });
+      expect(results.sort()).toEqual([join(tmp, "a.md"), join(tmp, "b.md")]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("descends only as deep as the pattern requires", async () => {
+    const { mkdtempSync, rmSync, mkdirSync, writeFileSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { expandGlob } = await import("./glob.js");
+    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    try {
+      mkdirSync(join(tmp, "a", "nested"), { recursive: true });
+      writeFileSync(join(tmp, "a", "x.md"), "");
+      writeFileSync(join(tmp, "a", "nested", "y.md"), "");
+      const results = await expandGlob(tmp, "a/*.md", { filesOnly: true });
+      expect(results).toEqual([join(tmp, "a", "x.md")]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("recurses fully when the pattern contains **", async () => {
+    const { mkdtempSync, rmSync, mkdirSync, writeFileSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { expandGlob } = await import("./glob.js");
+    const tmp = mkdtempSync(join(tmpdir(), "mo-glob-"));
+    try {
+      mkdirSync(join(tmp, "deep", "nest"), { recursive: true });
+      writeFileSync(join(tmp, "deep", "nest", "z.md"), "");
+      const results = await expandGlob(tmp, "**/*.md", { filesOnly: true });
+      expect(results).toEqual([join(tmp, "deep", "nest", "z.md")]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

@@ -59,13 +59,22 @@ export class Router {
       const match = r.regex.exec(urlPath);
       if (!match) continue;
       const params: Record<string, string> = {};
+      let decodeFailed = false;
       for (let i = 0; i < r.paramNames.length; i++) {
         const name = r.paramNames[i];
         const value = match[i + 1];
         if (name !== undefined && value !== undefined) {
-          params[name] = decodeURIComponent(value);
+          try {
+            params[name] = decodeURIComponent(value);
+          } catch {
+            // Malformed percent-encoding: treat as a non-match so a single
+            // bad request cannot crash the server.
+            decodeFailed = true;
+            break;
+          }
         }
       }
+      if (decodeFailed) continue;
       return { handler: r.handler, params };
     }
     return null;

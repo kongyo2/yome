@@ -336,6 +336,77 @@ describe("404 for unknown API route", () => {
   });
 });
 
+describe("malformed percent-encoding", () => {
+  it("does not crash the server when the route path has invalid encoding", async () => {
+    const r = await get("/_/api/groups/%E0%A4%A/files/abc/content");
+    // Should be a 404 (treated as non-match) and the server must keep running.
+    expect(r.status).toBe(404);
+    // Server is still alive: subsequent valid request still works.
+    const ok = await get("/_/api/version");
+    expect(ok.status).toBe(200);
+  });
+
+  it("returns 400 for malformed SPA paths instead of crashing", async () => {
+    const r = await get("/%E0%A4%A");
+    expect(r.status).toBe(400);
+    // Server is still alive.
+    const ok = await get("/_/api/version");
+    expect(ok.status).toBe(200);
+  });
+});
+
+describe("raw asset path boundary", () => {
+  it("rejects sibling-directory traversal that startsWith() would accept", async () => {
+    const { mkdir } = await import("node:fs/promises");
+    const appDir = join(tmp, "app");
+    const siblingDir = join(tmp, "app2");
+    await mkdir(appDir, { recursive: true });
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(join(appDir, "doc.md"), "# A");
+    await writeFile(join(siblingDir, "secret.txt"), "SECRET");
+    const e = JSON.parse(
+      (
+        await postJson("/_/api/groups/default/files", {
+          path: join(appDir, "doc.md"),
+        })
+      ).body,
+    );
+    const r = await get(
+      `/_/api/groups/default/files/${e.id}/raw/${encodeURIComponent("../app2/secret.txt")}`,
+    );
+    expect([403, 404]).toContain(r.status);
+    if (r.status === 200) expect(r.body).not.toContain("SECRET");
+  });
+});
+
+describe("uploaded content is not leaked in list / status responses", () => {
+  it("strips content from GET /_/api/groups", async () => {
+    await postJson("/_/api/groups/default/files/upload", {
+      name: "secret.md",
+      content: "very confidential",
+    });
+    const r = await get("/_/api/groups");
+    expect(r.body).not.toContain("very confidential");
+    const data = JSON.parse(r.body) as Array<{
+      files: Array<Record<string, unknown>>;
+    }>;
+    for (const g of data) {
+      for (const f of g.files) {
+        expect(f).not.toHaveProperty("content");
+      }
+    }
+  });
+
+  it("strips content from GET /_/api/status", async () => {
+    await postJson("/_/api/groups/default/files/upload", {
+      name: "secret.md",
+      content: "very confidential",
+    });
+    const r = await get("/_/api/status");
+    expect(r.body).not.toContain("very confidential");
+  });
+});
+
 describe("Non-ASCII / percent-encoded paths", () => {
   it("POST /_/api/groups/:group/files/open resolves percent-encoded non-ASCII relative paths", async () => {
     const src = join(tmp, "index.md");

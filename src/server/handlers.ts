@@ -4,6 +4,7 @@ import {
   isAbsolute,
   join,
   normalize,
+  relative,
   resolve as pathResolve,
 } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -18,7 +19,7 @@ import {
   type SearchResult,
 } from "./search.js";
 import { sendFile } from "./static.js";
-import { EVENT_STARTED } from "./types.js";
+import { EVENT_STARTED, type FileEntry } from "./types.js";
 
 const MAX_UPLOAD_BYTES = 12 << 20;
 const MAX_CONTENT_BYTES = 10 << 20;
@@ -99,6 +100,15 @@ export interface BuildHandlersOpts {
   pid: number;
 }
 
+// stripContent returns a serializable view of a FileEntry without the
+// in-memory `content` field. Uploaded contents can be up to 10MB and
+// must never leak into list / status / add responses.
+function stripContent(entry: FileEntry): Omit<FileEntry, "content"> {
+  const { content: _content, ...rest } = entry;
+  void _content;
+  return rest;
+}
+
 export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   const pid = opts.pid;
 
@@ -124,7 +134,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     }
     try {
       const entry = state.addFile(abs, group);
-      jsonResponse(res, 200, entry);
+      jsonResponse(res, 200, stripContent(entry));
     } catch (err) {
       textResponse(res, 400, (err as Error).message);
     }
@@ -151,7 +161,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     }
     if (!body.name) return textResponse(res, 400, "missing file name");
     const entry = state.addUploadedFile(body.name, body.content, group);
-    jsonResponse(res, 200, entry);
+    jsonResponse(res, 200, stripContent(entry));
   }
 
   function handleRemoveFile(
@@ -215,7 +225,14 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   function handleGroups(_req: IncomingMessage, res: ServerResponse) {
-    jsonResponse(res, 200, state.listGroups());
+    jsonResponse(
+      res,
+      200,
+      state.listGroups().map((g) => ({
+        name: g.name,
+        files: g.files.map(stripContent),
+      })),
+    );
   }
 
   async function handleFileContent(
@@ -341,9 +358,13 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       );
     }
     const relPath = params["path"] ?? "";
-    const baseDir = dirname(entry.path);
-    const abs = normalize(join(baseDir, relPath));
-    if (!pathResolve(abs).startsWith(pathResolve(baseDir))) {
+    const baseDir = pathResolve(dirname(entry.path));
+    const abs = pathResolve(normalize(join(baseDir, relPath)));
+    // Reject sibling-directory traversal: a startsWith() check is unsafe
+    // because /docs/app would accept /docs/app2/secret. Use a path-aware
+    // boundary via `relative()`.
+    const rel = relative(baseDir, abs);
+    if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
       return textResponse(res, 403, "access denied");
     }
     try {
@@ -393,7 +414,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     }
     try {
       const newEntry = state.addFile(abs, group);
-      jsonResponse(res, 200, newEntry);
+      jsonResponse(res, 200, stripContent(newEntry));
     } catch (err) {
       textResponse(res, 400, (err as Error).message);
     }
@@ -410,7 +431,10 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     if (error) return textResponse(res, 400, error.message);
     try {
       const entries = await state.addPattern(body.pattern, group);
-      jsonResponse(res, 200, { matched: entries.length, files: entries });
+      jsonResponse(res, 200, {
+        matched: entries.length,
+        files: entries.map(stripContent),
+      });
     } catch (err) {
       textResponse(res, 400, (err as Error).message);
     }
@@ -457,7 +481,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     const groups = state.listGroups();
     const statusGroups = groups.map((g) => ({
       name: g.name,
-      files: g.files,
+      files: g.files.map(stripContent),
       patterns: state.patternsForGroup(g.name),
     }));
     jsonResponse(res, 200, {

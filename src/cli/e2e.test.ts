@@ -146,7 +146,10 @@ describe("mo CLI", () => {
       await wait(100);
     }
     try {
-      expect(ready, `server did not become ready; child stderr:\n${stderrBuf}`).toBe(true);
+      expect(
+        ready,
+        `server did not become ready; child stderr:\n${stderrBuf}`,
+      ).toBe(true);
       const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
         (r) => r.json(),
       )) as {

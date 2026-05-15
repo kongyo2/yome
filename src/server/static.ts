@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { dirname, join, posix, resolve } from "node:path";
+import { dirname, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -53,7 +53,15 @@ function mimeForFile(path: string): string {
 export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
   let urlPath = (req.url ?? "/").split("?")[0] ?? "/";
   if (urlPath === "/") urlPath = "/index.html";
-  const decoded = decodeURIComponent(urlPath);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    // Malformed percent-encoding — refuse instead of crashing the process.
+    res.statusCode = 400;
+    res.end("bad request");
+    return;
+  }
   if (decoded.includes("..")) {
     res.statusCode = 403;
     res.end("forbidden");
@@ -61,8 +69,11 @@ export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
   }
   const requested = join(FRONTEND_DIR, decoded);
 
-  // Ensure the resolved path stays within FRONTEND_DIR.
-  if (!resolve(requested).startsWith(resolve(FRONTEND_DIR))) {
+  // Ensure the resolved path stays within FRONTEND_DIR using a
+  // separator-aware boundary check.
+  const baseAbs = resolve(FRONTEND_DIR);
+  const requestedAbs = resolve(requested);
+  if (requestedAbs !== baseAbs && !requestedAbs.startsWith(baseAbs + sep)) {
     res.statusCode = 403;
     res.end("forbidden");
     return;
