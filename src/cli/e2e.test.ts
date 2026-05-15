@@ -101,73 +101,79 @@ describe("yome CLI", () => {
     }
   });
 
-  it("starts a foreground server and serves the SPA + API", async () => {
-    const tmpFile = join(stateDir, "smoke.md");
-    writeFileSync(tmpFile, "# Smoke\n");
+  it(
+    "starts a foreground server and serves the SPA + API",
+    { timeout: 30_000 },
+    async () => {
+      const tmpFile = join(stateDir, "smoke.md");
+      writeFileSync(tmpFile, "# Smoke\n");
 
-    const child = spawn(
-      process.execPath,
-      [
-        ...launchArgs,
-        "--foreground",
-        "--port",
-        String(port),
-        "--bind",
-        "127.0.0.1",
-        "--no-open",
-        tmpFile,
-      ],
-      {
-        env: { ...process.env, XDG_STATE_HOME: stateDir },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    let stderrBuf = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
-    });
-    let exitedEarly = false;
-    child.on("exit", () => {
-      exitedEarly = true;
-    });
+      const child = spawn(
+        process.execPath,
+        [
+          ...launchArgs,
+          "--foreground",
+          "--port",
+          String(port),
+          "--bind",
+          "127.0.0.1",
+          "--no-open",
+          tmpFile,
+        ],
+        {
+          env: { ...process.env, XDG_STATE_HOME: stateDir },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stderrBuf = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrBuf += chunk.toString();
+      });
+      let exitedEarly = false;
+      child.on("exit", () => {
+        exitedEarly = true;
+      });
 
-    // Wait for readiness; longer than the default since CI can be slow.
-    let ready = false;
-    for (let i = 0; i < 100 && !ready && !exitedEarly; i++) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
-        if (res.ok) {
-          ready = true;
-          break;
+      // Wait for readiness; longer than the default since CI can be slow.
+      let ready = false;
+      for (let i = 0; i < 100 && !ready && !exitedEarly; i++) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
+          if (res.ok) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // not yet
         }
-      } catch {
-        // not yet
+        await wait(100);
       }
-      await wait(100);
-    }
-    try {
-      expect(
-        ready,
-        `server did not become ready; child stderr:\n${stderrBuf}`,
-      ).toBe(true);
-      const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
-        (r) => r.json(),
-      )) as {
-        version: string;
-        groups: Array<{ name: string; files: Array<{ name: string }> }>;
-      };
-      expect(status.version).toBe("1.5.5");
-      const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
-      expect(names).toContain("smoke.md");
+      try {
+        expect(
+          ready,
+          `server did not become ready; child stderr:\n${stderrBuf}`,
+        ).toBe(true);
+        const status = (await fetch(
+          `http://127.0.0.1:${port}/_/api/status`,
+        ).then((r) => r.json())) as {
+          version: string;
+          groups: Array<{ name: string; files: Array<{ name: string }> }>;
+        };
+        expect(status.version).toBe("1.5.5");
+        const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
+        expect(names).toContain("smoke.md");
 
-      const spa = await fetch(`http://127.0.0.1:${port}/`);
-      // SPA might be served or fall back to 404 if dist isn't built; we built earlier, so 200.
-      expect([200, 404]).toContain(spa.status);
-    } finally {
-      child.kill("SIGINT");
-      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    }
-  });
+        const spa = await fetch(`http://127.0.0.1:${port}/`);
+        // SPA might be served or fall back to 404 if dist isn't built; we built earlier, so 200.
+        expect([200, 404]).toContain(spa.status);
+      } finally {
+        child.kill("SIGINT");
+        await new Promise<void>((resolve) =>
+          child.once("exit", () => resolve()),
+        );
+      }
+    },
+  );
 
   it("rejects an invalid group name", () => {
     const tmpFile = join(stateDir, "a.md");
