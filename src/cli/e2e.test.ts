@@ -136,14 +136,14 @@ describe("yome CLI", () => {
       child.stderr?.on("data", (chunk: Buffer) => {
         stderrBuf += chunk.toString();
       });
-      let exitedEarly = false;
+      const exited = { value: false };
       child.on("exit", () => {
-        exitedEarly = true;
+        exited.value = true;
       });
 
       // Wait for readiness; longer than the default since CI can be slow.
       let ready = false;
-      for (let i = 0; i < 100 && !ready && !exitedEarly; i++) {
+      for (let i = 0; i < 100 && !ready && !exited.value; i++) {
         try {
           const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
           if (res.ok) {

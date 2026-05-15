@@ -262,7 +262,9 @@ async function shutdownOrRestartAll(
   for (const port of ports) {
     const addr = `localhost:${port}`;
     try {
-      await probeServer(addr, PROBE_TIMEOUT_FAST);
+      // Use the full probe timeout (not the fast one) so a temporarily
+      // slow-but-running yome instance is not silently skipped.
+      await probeServer(addr, PROBE_TIMEOUT_DEFAULT);
     } catch {
       continue;
     }
@@ -1059,13 +1061,6 @@ export async function runCli(): Promise<number> {
   // Detect open/no-open explicitly from argv before commander folds them.
   const openExplicit = process.argv.includes("--open");
   const noOpenExplicit = process.argv.includes("--no-open");
-  // Detect --port / -p so --shutdown / --restart can default to acting on
-  // every running instance when the user did not pin a specific port.
-  const portExplicit = process.argv.some((arg) => {
-    if (arg === "--port" || arg === "-p") return true;
-    if (arg.startsWith("--port=") || arg.startsWith("-p=")) return true;
-    return /^-p\d/.test(arg);
-  });
   if (openExplicit && noOpenExplicit) {
     process.stderr.write("yome: --open and --no-open are mutually exclusive\n");
     return 1;
@@ -1079,6 +1074,10 @@ export async function runCli(): Promise<number> {
     return e.exitCode ?? 1;
   }
   const opts = parsed.opts<Record<string, unknown>>();
+  // Ask commander whether --port came from the command line. This handles
+  // every valid short-form syntax (-p N, -pN, --port=N, clustered -Rp7000,
+  // even malformed values like -pfoo) without re-implementing the parser.
+  const portExplicit = program.getOptionValueSource("port") === "cli";
 
   const flags: Flags = {
     target: String(opts["target"] ?? DefaultGroup),

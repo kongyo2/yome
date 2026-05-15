@@ -373,7 +373,6 @@ describe("malformed percent-encoding", () => {
 
 describe("raw asset path boundary", () => {
   it("rejects sibling-directory traversal that startsWith() would accept", async () => {
-    const { mkdir } = await import("node:fs/promises");
     const appDir = join(tmp, "app");
     const siblingDir = join(tmp, "app2");
     await mkdir(appDir, { recursive: true });

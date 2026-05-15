@@ -14,6 +14,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
 import rehypeKatex from "rehype-katex";
 import { rehypeGithubAlerts } from "rehype-github-alerts";
+// oxlint-disable-next-line import/no-unassigned-import
 import "katex/dist/katex.min.css";
 import { codeToHtml } from "shiki";
 import mermaid from "mermaid";
@@ -35,6 +36,7 @@ import { isMarkdownFile, detectLanguage } from "../utils/filetype";
 import type { ZoomContent } from "./ZoomModal";
 import type { TocHeading } from "./TocPanel";
 import type { Components } from "react-markdown";
+// oxlint-disable-next-line import/no-unassigned-import
 import "github-markdown-css/github-markdown.css";
 import type { FontSize } from "./FontSizeToggle";
 
@@ -191,8 +193,10 @@ async function renderMermaid(code: string, width?: number): Promise<string> {
     try {
       const { svg } = await mermaid.render(id, code, container);
       resolve!(svg);
+      return undefined;
     } catch (err) {
       reject!(err);
+      return undefined;
     } finally {
       container.remove();
       cleanupMermaidErrors();
@@ -221,6 +225,7 @@ export function MermaidBlock({
       renderMermaid(code, width)
         .then((renderedSvg) => {
           if (!cancelled) setSvg(renderedSvg);
+          return undefined;
         })
         .catch(() => {
           if (!cancelled) setSvg("");
@@ -474,6 +479,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
     codeToHtml(code, { lang: language, theme: "github-dark" })
       .then((result) => {
         if (!cancelled) setHtml(result);
+        return undefined;
       })
       .catch(() => {
         // Fallback: if language not supported, try plaintext
@@ -481,6 +487,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
           codeToHtml(code, { lang: "text", theme: "github-dark" })
             .then((result) => {
               if (!cancelled) setHtml(result);
+              return undefined;
             })
             .catch(() => {});
         }
@@ -536,12 +543,14 @@ function HighlightedView({
     codeToHtml(content, { lang: language, theme: "github-dark" })
       .then((result) => {
         if (!cancelled) setHtml(result);
+        return undefined;
       })
       .catch(() => {
         if (!cancelled) {
           codeToHtml(content, { lang: "text", theme: "github-dark" })
             .then((result) => {
               if (!cancelled) setHtml(result);
+              return undefined;
             })
             .catch(() => {});
         }
@@ -611,6 +620,7 @@ export function MarkdownViewer({
           setContent(data.content);
           setLoading(false);
         }
+        return undefined;
       })
       .catch(() => {
         if (!cancelled) {

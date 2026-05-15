@@ -133,12 +133,12 @@ describe("MermaidBlock", () => {
         naturalHeight = 100;
         onload: (() => void) | null = null;
         onerror: (() => void) | null = null;
-        _src = "";
+        srcValue = "";
         get src() {
-          return this._src;
+          return this.srcValue;
         }
         set src(val: string) {
-          this._src = val;
+          this.srcValue = val;
           setTimeout(() => this.onload?.(), 0);
         }
       },

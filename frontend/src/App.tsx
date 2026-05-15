@@ -238,6 +238,7 @@ export function App() {
       .then((data) => {
         knownFileIds.current = allFileIds(data);
         setGroups(data);
+        return undefined;
       })
       .catch(() => {});
   }, []);
@@ -282,6 +283,7 @@ export function App() {
             setSearchResults(resp.results);
             setSearchLoading(false);
           }
+          return undefined;
         })
         .catch(() => {
           if (!cancelled) {

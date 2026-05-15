@@ -1,3 +1,4 @@
+/* oxlint-disable no-console, no-underscore-dangle */
 import { chromium } from "playwright";
 import { execSync, spawn } from "node:child_process";
 import { resolve, dirname } from "node:path";
