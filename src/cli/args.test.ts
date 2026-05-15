@@ -102,7 +102,9 @@ describe("resolveArgs", () => {
       false,
     );
     expect(patterns).toEqual([]);
-    expect(files.sort()).toEqual([join(tmp, "docs", "a.md"), standalone].sort());
+    expect(files.sort()).toEqual(
+      [join(tmp, "docs", "a.md"), standalone].sort(),
+    );
   });
 });
 

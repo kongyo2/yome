@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,16 +20,16 @@ const srcBin = pathResolve(moduleDir, "..", "bin", "mo.ts");
 const haveDist = existsSync(distBin);
 const launchArgs = haveDist
   ? [distBin]
-  : [
-      "--no-warnings",
-      "--experimental-strip-types",
-      "--import",
-      "tsx",
-      srcBin,
-    ];
+  : ["--no-warnings", "--experimental-strip-types", "--import", "tsx", srcBin];
 
-function runMo(args: string[], opts: { input?: string; cwd?: string; env?: Record<string, string> } = {}) {
-  const env: Record<string, string> = { ...process.env, ...opts.env } as Record<string, string>;
+function runMo(
+  args: string[],
+  opts: { input?: string; cwd?: string; env?: Record<string, string> } = {},
+) {
+  const env: Record<string, string> = { ...process.env, ...opts.env } as Record<
+    string,
+    string
+  >;
   return spawnSync(process.execPath, [...launchArgs, ...args], {
     input: opts.input,
     encoding: "utf8",
@@ -36,7 +44,9 @@ let port: number;
 
 beforeAll(() => {
   if (!haveDist && !existsSync(srcBin)) {
-    throw new Error("Neither dist/bin/mo.js nor src/bin/mo.ts exists; build first.");
+    throw new Error(
+      "Neither dist/bin/mo.js nor src/bin/mo.ts exists; build first.",
+    );
   }
 });
 
@@ -48,7 +58,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   // Best-effort shutdown if a server is still up.
-  runMo(["--port", String(port), "--shutdown"], { env: { XDG_STATE_HOME: stateDir } });
+  runMo(["--port", String(port), "--shutdown"], {
+    env: { XDG_STATE_HOME: stateDir },
+  });
   await wait(200);
   rmSync(stateDir, { recursive: true, force: true });
 });
@@ -78,7 +90,9 @@ describe("mo CLI", () => {
   });
 
   it("--status --json emits an array of entries", () => {
-    const r = runMo(["--status", "--json"], { env: { XDG_STATE_HOME: stateDir } });
+    const r = runMo(["--status", "--json"], {
+      env: { XDG_STATE_HOME: stateDir },
+    });
     expect(r.status).toBe(0);
     const data = JSON.parse(r.stdout) as Array<{ status?: string }>;
     expect(Array.isArray(data)).toBe(true);
@@ -93,7 +107,14 @@ describe("mo CLI", () => {
 
     const child = spawn(
       process.execPath,
-      [...launchArgs, "--foreground", "--port", String(port), "--no-open", tmpFile],
+      [
+        ...launchArgs,
+        "--foreground",
+        "--port",
+        String(port),
+        "--no-open",
+        tmpFile,
+      ],
       {
         env: { ...process.env, XDG_STATE_HOME: stateDir },
         stdio: ["ignore", "pipe", "pipe"],
@@ -115,7 +136,9 @@ describe("mo CLI", () => {
     }
     try {
       expect(ready).toBe(true);
-      const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then((r) => r.json())) as {
+      const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
+        (r) => r.json(),
+      )) as {
         version: string;
         groups: Array<{ name: string; files: Array<{ name: string }> }>;
       };
@@ -135,9 +158,20 @@ describe("mo CLI", () => {
   it("rejects an invalid group name", () => {
     const tmpFile = join(stateDir, "a.md");
     writeFileSync(tmpFile, "# A");
-    const r = runMo(["--target", "_/internal", "--foreground", "--no-open", "--port", String(port), tmpFile], {
-      env: { XDG_STATE_HOME: stateDir },
-    });
+    const r = runMo(
+      [
+        "--target",
+        "_/internal",
+        "--foreground",
+        "--no-open",
+        "--port",
+        String(port),
+        tmpFile,
+      ],
+      {
+        env: { XDG_STATE_HOME: stateDir },
+      },
+    );
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/invalid target group name/);
   });
