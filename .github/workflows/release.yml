@@ -1,0 +1,144 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "バージョン指定: patch/minor/major または 1.6.0 のような明示的バージョン"
+        required: true
+        default: "patch"
+      dry-run:
+        description: "Dry run (npm publish と tag push を行わない)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Type check (root)
+        run: npx tsc --noEmit
+
+      - name: Type check (frontend)
+        run: cd frontend && npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Server tests
+        run: npx vitest run
+
+      - name: Frontend tests
+        run: cd frontend && npx vitest run
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test (CLI version)
+        run: node dist/bin/yome.js --version
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          INPUT="${{ inputs.version }}"
+          case "$INPUT" in
+            patch|minor|major)
+              NEW_VERSION=$(npm version "$INPUT" --no-git-tag-version)
+              ;;
+            *)
+              NEW_VERSION="v$INPUT"
+              npm version "$INPUT" --no-git-tag-version --allow-same-version
+              ;;
+          esac
+          # frontend の package.json も同期して整合性を保つ
+          cd frontend
+          npm version "${NEW_VERSION#v}" --no-git-tag-version --allow-same-version
+          cd ..
+          # src/version.ts も差し替え (バージョン文字列を埋め込んでいるため)
+          node -e "
+            const fs = require('fs');
+            const v = '${NEW_VERSION#v}';
+            const path = 'src/version.ts';
+            const src = fs.readFileSync(path, 'utf8');
+            fs.writeFileSync(path, src.replace(/Version = \"[^\"]+\"/, 'Version = \"' + v + '\"'));
+          "
+          echo "version=${NEW_VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild with bumped version
+        run: npm run build
+
+      - name: Commit and tag
+        if: ${{ !inputs.dry-run }}
+        run: |
+          git add package.json package-lock.json frontend/package.json frontend/package-lock.json src/version.ts
+          git commit -m "chore(release): ${{ steps.bump.outputs.tag }}"
+          git tag "${{ steps.bump.outputs.tag }}"
+
+      - name: Push commit and tag
+        if: ${{ !inputs.dry-run }}
+        run: |
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "${{ steps.bump.outputs.tag }}"
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry-run }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run (npm publish)
+        if: ${{ inputs.dry-run }}
+        run: npm publish --access public --provenance --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.bump.outputs.tag }}" \
+            --title "${{ steps.bump.outputs.tag }}" \
+            --generate-notes
+
+      - name: Summary
+        run: |
+          echo "## Release summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${{ steps.bump.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tag: \`${{ steps.bump.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dry run: \`${{ inputs.dry-run }}\`" >> "$GITHUB_STEP_SUMMARY"
