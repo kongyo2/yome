@@ -45,6 +45,16 @@ describe("matchPattern", () => {
   });
   it("matches recursive glob", () => {
     expect(matchPattern("/foo/**/*.md", "/foo/sub/bar.md")).toBe(true);
+    expect(matchPattern("/foo/**/*.md", "/foo/deep/nested/bar.md")).toBe(true);
+  });
+  it("matches recursive glob at root of base", () => {
+    expect(matchPattern("/foo/**/*.md", "/foo/bar.md")).toBe(true);
+  });
+  it("rejects mismatched extension", () => {
+    expect(matchPattern("/foo/*.md", "/foo/bar.txt")).toBe(false);
+  });
+  it("rejects outside base", () => {
+    expect(matchPattern("/foo/*.md", "/bar/baz.md")).toBe(false);
   });
 });
 

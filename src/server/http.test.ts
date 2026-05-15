@@ -335,3 +335,68 @@ describe("404 for unknown API route", () => {
     expect(r.status).toBe(404);
   });
 });
+
+describe("Non-ASCII / percent-encoded paths", () => {
+  it("POST /_/api/groups/:group/files/open resolves percent-encoded non-ASCII relative paths", async () => {
+    const src = join(tmp, "index.md");
+    const target = join(tmp, "日本語ファイル.md");
+    await writeFile(src, "# Index");
+    await writeFile(target, "# Japanese");
+    const e = JSON.parse(
+      (await postJson("/_/api/groups/default/files", { path: src })).body,
+    );
+    const encoded = encodeURIComponent("日本語ファイル.md");
+    const r = await postJson("/_/api/groups/default/files/open", {
+      fileId: e.id,
+      path: encoded,
+    });
+    expect(r.status).toBe(200);
+    const opened = JSON.parse(r.body);
+    expect(opened.path).toBe(target);
+  });
+
+  it("GET /raw/:path serves percent-encoded non-ASCII asset names", async () => {
+    const mdPath = join(tmp, "index.md");
+    const assetPath = join(tmp, "画像.txt");
+    await writeFile(mdPath, "# Index");
+    await writeFile(assetPath, "asset content");
+    const e = JSON.parse(
+      (await postJson("/_/api/groups/default/files", { path: mdPath })).body,
+    );
+    const r = await get(
+      `/_/api/groups/default/files/${e.id}/raw/${encodeURIComponent("画像.txt")}`,
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe("asset content");
+  });
+});
+
+describe("Debounced file change", () => {
+  it("collapses repeated scheduleFileChanged calls into one SSE event", async () => {
+    const debouncedState = new State({
+      fileChangeDebounceMs: 30,
+      disableWatcher: true,
+    });
+    const events: string[] = [];
+    debouncedState.subscribe((e) => {
+      if (e.name === "file-changed") events.push(e.data);
+    });
+    const path = join(tmp, "x.md");
+    await writeFile(path, "# X\n");
+    debouncedState.addFile(path, "default");
+    // private method; cast to access
+    (
+      debouncedState as unknown as { scheduleFileChanged: (p: string) => void }
+    ).scheduleFileChanged(path);
+    (
+      debouncedState as unknown as { scheduleFileChanged: (p: string) => void }
+    ).scheduleFileChanged(path);
+    (
+      debouncedState as unknown as { scheduleFileChanged: (p: string) => void }
+    ).scheduleFileChanged(path);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(events.length).toBe(1);
+    debouncedState.closeAllSubscribers();
+    debouncedState.closeBackup();
+  });
+});
