@@ -112,6 +112,8 @@ describe("mo CLI", () => {
         "--foreground",
         "--port",
         String(port),
+        "--bind",
+        "127.0.0.1",
         "--no-open",
         tmpFile,
       ],
@@ -120,9 +122,18 @@ describe("mo CLI", () => {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-    // Wait for readiness via direct fetch
+    let stderrBuf = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
+    let exitedEarly = false;
+    child.on("exit", () => {
+      exitedEarly = true;
+    });
+
+    // Wait for readiness; longer than the default since CI can be slow.
     let ready = false;
-    for (let i = 0; i < 30 && !ready; i++) {
+    for (let i = 0; i < 100 && !ready && !exitedEarly; i++) {
       try {
         const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
         if (res.ok) {
@@ -135,7 +146,7 @@ describe("mo CLI", () => {
       await wait(100);
     }
     try {
-      expect(ready).toBe(true);
+      expect(ready, `server did not become ready; child stderr:\n${stderrBuf}`).toBe(true);
       const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
         (r) => r.json(),
       )) as {
