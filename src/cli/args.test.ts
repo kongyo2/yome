@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Command } from "commander";
 import { resolveArgs, resolveUnwatchArgs } from "./args.js";
 
 let tmp: string;
@@ -155,5 +156,42 @@ describe("resolveUnwatchArgs", () => {
     const pat = join(tmp, "*.md");
     const out = await resolveUnwatchArgs([pat, pat], false, async () => []);
     expect(out).toEqual([pat]);
+  });
+});
+
+describe("port explicit-source detection (commander getOptionValueSource)", () => {
+  // Locks in the assumption behind the --shutdown/--restart fan-out gate:
+  // commander tags --port as `cli` for every valid short/long syntax, so the
+  // gate doesn't need to re-parse argv itself.
+  const makeProgram = () => {
+    const p = new Command();
+    p.exitOverride()
+      .option("-R, --recursive", "Recursive")
+      .option("-w, --watch", "Watch")
+      .option("-p, --port <number>", "Port", (v) => Number(v), 6275);
+    return p;
+  };
+  const sourceOf = (argv: string[]): string | undefined => {
+    const p = makeProgram();
+    p.parse(["node", "yome", ...argv]);
+    return p.getOptionValueSource("port");
+  };
+
+  it("returns 'default' when --port is omitted", () => {
+    expect(sourceOf([])).toBe("default");
+  });
+  it("treats every explicit syntax as 'cli'", () => {
+    expect(sourceOf(["-p", "7000"])).toBe("cli");
+    expect(sourceOf(["-p7000"])).toBe("cli");
+    expect(sourceOf(["--port", "7000"])).toBe("cli");
+    expect(sourceOf(["--port=7000"])).toBe("cli");
+    // Clustered short flags: -R + -p7000 packed into one token.
+    expect(sourceOf(["-Rp7000"])).toBe("cli");
+    expect(sourceOf(["-Rwp7000"])).toBe("cli");
+  });
+  it("treats malformed inline values as 'cli' too", () => {
+    // -pfoo is still an explicit --port attempt from the user's perspective;
+    // we must not silently fall back to fan-out shutdown semantics.
+    expect(sourceOf(["-pfoo"])).toBe("cli");
   });
 });

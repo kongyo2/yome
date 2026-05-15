@@ -86,7 +86,7 @@ describe("GET /_/api/version", () => {
     const r = await get("/_/api/version");
     expect(r.status).toBe(200);
     const data = JSON.parse(r.body);
-    expect(data.version).toBe("1.5.6");
+    expect(data.version).toBe("1.5.8");
     expect(data.revision).toBe("HEAD");
   });
 });
@@ -96,7 +96,7 @@ describe("GET /_/api/status", () => {
     const r = await get("/_/api/status");
     expect(r.status).toBe(200);
     const data = JSON.parse(r.body);
-    expect(data.version).toBe("1.5.6");
+    expect(data.version).toBe("1.5.8");
     expect(data.pid).toBe(process.pid);
     expect(Array.isArray(data.groups)).toBe(true);
   });
@@ -373,7 +373,6 @@ describe("malformed percent-encoding", () => {
 
 describe("raw asset path boundary", () => {
   it("rejects sibling-directory traversal that startsWith() would accept", async () => {
-    const { mkdir } = await import("node:fs/promises");
     const appDir = join(tmp, "app");
     const siblingDir = join(tmp, "app2");
     await mkdir(appDir, { recursive: true });

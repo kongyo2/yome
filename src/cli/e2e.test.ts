@@ -30,11 +30,18 @@ function runYome(
     string,
     string
   >;
+  // When no input is provided we ignore stdin so it appears as a character
+  // device (/dev/null) — otherwise spawnSync hands the child an empty pipe,
+  // which yome interprets as redirected stdin and rejects when positional
+  // file arguments are also given.
+  const stdio: "pipe" | ["ignore", "pipe", "pipe"] =
+    opts.input === undefined ? ["ignore", "pipe", "pipe"] : "pipe";
   return spawnSync(process.execPath, [...launchArgs, ...args], {
     input: opts.input,
     encoding: "utf8",
     cwd: opts.cwd ?? process.cwd(),
     env,
+    stdio,
     timeout: 15_000,
   });
 }
@@ -73,7 +80,7 @@ describe("yome CLI", () => {
   it("--version prints the version", () => {
     const r = runYome(["--version"]);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/1\.5\.6/);
+    expect(r.stdout).toMatch(/1\.5\.8/);
   });
 
   it("--help prints usage", () => {
@@ -129,14 +136,14 @@ describe("yome CLI", () => {
       child.stderr?.on("data", (chunk: Buffer) => {
         stderrBuf += chunk.toString();
       });
-      let exitedEarly = false;
+      const exited = { value: false };
       child.on("exit", () => {
-        exitedEarly = true;
+        exited.value = true;
       });
 
       // Wait for readiness; longer than the default since CI can be slow.
       let ready = false;
-      for (let i = 0; i < 100 && !ready && !exitedEarly; i++) {
+      for (let i = 0; i < 100 && !ready && !exited.value; i++) {
         try {
           const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
           if (res.ok) {
@@ -159,7 +166,7 @@ describe("yome CLI", () => {
           version: string;
           groups: Array<{ name: string; files: Array<{ name: string }> }>;
         };
-        expect(status.version).toBe("1.5.6");
+        expect(status.version).toBe("1.5.8");
         const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
         expect(names).toContain("smoke.md");
 
@@ -201,4 +208,82 @@ describe("yome CLI", () => {
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/--recursive.*requires a directory/);
   });
+
+  it(
+    "--shutdown without --port stops every running instance",
+    { timeout: 30_000 },
+    async () => {
+      const portA = port;
+      const portB = port + 1;
+      const tmpFile = join(stateDir, "two.md");
+      writeFileSync(tmpFile, "# Two\n");
+
+      const waitForUp = async (p: number) => {
+        for (let i = 0; i < 100; i++) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${p}/_/api/status`);
+            if (res.ok) return true;
+          } catch {
+            // not yet
+          }
+          await wait(100);
+        }
+        return false;
+      };
+      const waitForDown = async (p: number) => {
+        for (let i = 0; i < 50; i++) {
+          try {
+            await fetch(`http://127.0.0.1:${p}/_/api/status`);
+          } catch {
+            return true;
+          }
+          await wait(100);
+        }
+        return false;
+      };
+
+      try {
+        const a = runYome(
+          [
+            "--port",
+            String(portA),
+            "--bind",
+            "127.0.0.1",
+            "--no-open",
+            tmpFile,
+          ],
+          { env: { XDG_STATE_HOME: stateDir } },
+        );
+        expect(a.status).toBe(0);
+        const b = runYome(
+          [
+            "--port",
+            String(portB),
+            "--bind",
+            "127.0.0.1",
+            "--no-open",
+            tmpFile,
+          ],
+          { env: { XDG_STATE_HOME: stateDir } },
+        );
+        expect(b.status).toBe(0);
+        expect(await waitForUp(portA)).toBe(true);
+        expect(await waitForUp(portB)).toBe(true);
+
+        const r = runYome(["--shutdown"], {
+          env: { XDG_STATE_HOME: stateDir },
+        });
+        expect(r.status).toBe(0);
+        expect(r.stderr).toMatch(new RegExp(`http://localhost:${portA}`));
+        expect(r.stderr).toMatch(new RegExp(`http://localhost:${portB}`));
+
+        expect(await waitForDown(portA)).toBe(true);
+        expect(await waitForDown(portB)).toBe(true);
+      } finally {
+        runYome(["--port", String(portB), "--shutdown"], {
+          env: { XDG_STATE_HOME: stateDir },
+        });
+      }
+    },
+  );
 });

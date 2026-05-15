@@ -47,6 +47,7 @@ const DEFAULT_PORT = 6275;
 interface Flags {
   target: string;
   port: number;
+  portExplicit: boolean;
   bind: string;
   open: boolean;
   noOpen: boolean;
@@ -246,6 +247,47 @@ async function doRestart(addr: string): Promise<void> {
   }
   logger.info("restart request sent", { addr });
   process.stderr.write(`yome: restart request sent to http://${addr}\n`);
+}
+
+async function shutdownOrRestartAll(
+  action: "shutdown" | "restart",
+): Promise<number> {
+  const ports = await discoverPorts();
+  if (ports.length === 0) {
+    process.stderr.write("yome: no yome server found\n");
+    return 0;
+  }
+  let actedCount = 0;
+  const errors: Array<{ port: number; message: string }> = [];
+  for (const port of ports) {
+    const addr = `localhost:${port}`;
+    try {
+      // Use the full probe timeout (not the fast one) so a temporarily
+      // slow-but-running yome instance is not silently skipped.
+      await probeServer(addr, PROBE_TIMEOUT_DEFAULT);
+    } catch {
+      continue;
+    }
+    try {
+      if (action === "shutdown") {
+        await doShutdown(addr);
+      } else {
+        await doRestart(addr);
+      }
+      actedCount++;
+    } catch (err) {
+      errors.push({ port, message: (err as Error).message });
+    }
+  }
+  for (const e of errors) {
+    process.stderr.write(
+      `yome: failed to ${action} port ${e.port}: ${e.message}\n`,
+    );
+  }
+  if (actedCount === 0 && errors.length === 0) {
+    process.stderr.write("yome: no running yome server found\n");
+  }
+  return errors.length > 0 ? 1 : 0;
 }
 
 async function doUnwatch(
@@ -531,11 +573,17 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   }
 
   if (flags.shutdown) {
+    if (!flags.portExplicit) {
+      return await shutdownOrRestartAll("shutdown");
+    }
     await doShutdown(addr);
     return 0;
   }
 
   if (flags.restart) {
+    if (!flags.portExplicit) {
+      return await shutdownOrRestartAll("restart");
+    }
     await doRestart(addr);
     return 0;
   }
@@ -925,8 +973,10 @@ Groups:
 
 Starting and Stopping:
   yome runs in the background by default. Use --status to inspect, --shutdown
-  to stop, and --restart to restart while preserving session state.
-  Use --foreground to keep the server attached to the terminal.
+  to stop, and --restart to restart while preserving session state. Without
+  an explicit --port, --shutdown and --restart act on every running instance
+  discovered on this machine. Use --foreground to keep the server attached
+  to the terminal.
 
 Session Restore:
   yome automatically saves session state. When starting a new server, the
@@ -973,11 +1023,11 @@ export async function runCli(): Promise<number> {
     .option("--no-open", "Do not open browser automatically")
     .option(
       "--shutdown",
-      "Shut down the running yome server on the specified port",
+      "Shut down running yome server(s) (all instances when --port is omitted)",
     )
     .option(
       "--restart",
-      "Restart the running yome server on the specified port",
+      "Restart running yome server(s) (all instances when --port is omitted)",
     )
     .addOption(
       new CommanderOption(
@@ -1024,10 +1074,15 @@ export async function runCli(): Promise<number> {
     return e.exitCode ?? 1;
   }
   const opts = parsed.opts<Record<string, unknown>>();
+  // Ask commander whether --port came from the command line. This handles
+  // every valid short-form syntax (-p N, -pN, --port=N, clustered -Rp7000,
+  // even malformed values like -pfoo) without re-implementing the parser.
+  const portExplicit = program.getOptionValueSource("port") === "cli";
 
   const flags: Flags = {
     target: String(opts["target"] ?? DefaultGroup),
     port: Number(opts["port"] ?? DEFAULT_PORT),
+    portExplicit,
     bind: String(opts["bind"] ?? "localhost"),
     open: openExplicit,
     noOpen: noOpenExplicit,
