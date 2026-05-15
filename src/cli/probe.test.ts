@@ -33,7 +33,7 @@ afterEach(async () => {
 describe("probeServer", () => {
   it("returns status when server is running", async () => {
     const r = await probeServer(addr, 2000);
-    expect(r.status.version).toBe("1.5.6");
+    expect(r.status.version).toBe("1.5.8");
     expect(Array.isArray(r.groups)).toBe(true);
   });
   it("rejects when nothing is listening", async () => {
@@ -47,7 +47,7 @@ describe("httpGetJson", () => {
       `http://${addr}/_/api/version`,
       2000,
     );
-    expect(data.version).toBe("1.5.6");
+    expect(data.version).toBe("1.5.8");
   });
 });
 
@@ -66,7 +66,7 @@ describe("httpRequestJson", () => {
 describe("waitForReady", () => {
   it("resolves immediately when server is up", async () => {
     const status = await waitForReady(addr, 2000);
-    expect(status?.version).toBe("1.5.6");
+    expect(status?.version).toBe("1.5.8");
   });
 });
 

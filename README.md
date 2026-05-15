@@ -65,8 +65,8 @@ yome -w -R docs/
 
 ```bash
 yome --status              # 起動中の yome サーバー一覧を表示
-yome --shutdown            # サーバーを停止
-yome --restart             # 状態を保ったまま再起動
+yome --shutdown            # 起動中の yome サーバーをすべて停止 (--port 指定時はそのポートのみ)
+yome --restart             # 状態を保ったまま再起動 (--port 指定時はそのポートのみ)
 yome --clear               # 保存済みセッションを破棄
 yome --close path/to.md    # 指定ファイルだけグループから外す
 yome --unwatch docs/       # watch パターンを解除
