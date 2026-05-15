@@ -76,27 +76,30 @@ jobs:
           INPUT="${{ inputs.version }}"
           case "$INPUT" in
             patch|minor|major)
-              NEW_VERSION=$(npm version "$INPUT" --no-git-tag-version)
+              npm version "$INPUT" --no-git-tag-version
               ;;
             *)
-              NEW_VERSION="v$INPUT"
               npm version "$INPUT" --no-git-tag-version --allow-same-version
               ;;
           esac
+          # npm が正規化したバージョンを単一の真実の源として再取得する。
+          # こうすると入力が "1.6.0" でも "v1.6.0" でも一貫した値になる。
+          VERSION=$(node -p "require('./package.json').version")
+          NEW_VERSION="v$VERSION"
           # frontend の package.json も同期して整合性を保つ
           cd frontend
-          npm version "${NEW_VERSION#v}" --no-git-tag-version --allow-same-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
           cd ..
           # src/version.ts も差し替え (バージョン文字列を埋め込んでいるため)
           node -e "
             const fs = require('fs');
-            const v = '${NEW_VERSION#v}';
+            const v = '$VERSION';
             const path = 'src/version.ts';
             const src = fs.readFileSync(path, 'utf8');
             fs.writeFileSync(path, src.replace(/Version = \"[^\"]+\"/, 'Version = \"' + v + '\"'));
           "
-          echo "version=${NEW_VERSION#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Rebuild with bumped version
         run: npm run build
