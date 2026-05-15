@@ -89,45 +89,6 @@ yome --unwatch docs/       # watch パターンを解除
 
 `yome --help` で全オプションが確認できます。
 
-## セキュリティに関する注意
-
-`--bind` に `0.0.0.0` などの非ループバックアドレスを指定すると、`yome` には認証機構がないためネットワーク上の任意のクライアントから次のことが可能になります:
-
-- 当該ユーザーで読めるファイルの閲覧
-- glob パターンによるファイルシステムの探索
-- サーバーの停止 / 再起動
-
-信頼できないネットワークでは使用しないでください。実行時にも警告と確認プロンプトが表示されます。
-
-## 開発
-
-```bash
-git clone https://github.com/kongyo2/yome.git
-cd yome
-npm ci
-cd frontend && npm ci && cd ..
-
-# 開発サーバー
-npm run dev
-
-# テスト・型チェック・lint
-npm test
-npm run typecheck
-npm run lint
-
-# ビルド
-npm run build
-```
-
-ソースは以下のように分かれています:
-
-- `src/cli/` — CLI のエントリと引数解決
-- `src/server/` — HTTP サーバー、SSE、ファイル監視
-- `src/backup/` — セッション復元用の状態保存
-- `frontend/` — Vite + React の SPA
-
-設計方針は [`CLAUDE.md`](CLAUDE.md) に記載のとおり、関心の分離・状態とロジックの分離・コントラクト層 (API/型) の厳密な定義を重視しています。
-
 ## ライセンス
 
 MIT License。
