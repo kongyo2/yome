@@ -1,0 +1,71 @@
+{
+  "name": "@kongyo/mo",
+  "version": "1.5.5",
+  "description": "Markdown viewer that opens .md files in a browser with live-reload",
+  "keywords": [
+    "markdown",
+    "viewer",
+    "preview",
+    "browser",
+    "live-reload",
+    "mermaid",
+    "katex",
+    "shiki",
+    "cli"
+  ],
+  "homepage": "https://github.com/kongyo2/yome",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kongyo2/yome.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kongyo2/yome/issues"
+  },
+  "author": "k1LoW (original Go implementation), ported to Node.js",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mo": "dist/bin/mo.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "build": "npm run build:frontend && npm run build:server",
+    "build:frontend": "cd frontend && vite build",
+    "build:server": "tsc -p tsconfig.build.json && node scripts/post-build.mjs",
+    "dev": "npm run build:frontend && node --import tsx src/bin/mo.ts --foreground --port 16275",
+    "dev:frontend": "cd frontend && vite",
+    "test": "vitest run && cd frontend && vitest run",
+    "test:server": "vitest run",
+    "test:frontend": "cd frontend && vitest run",
+    "typecheck": "tsc --noEmit && cd frontend && tsc --noEmit",
+    "lint": "oxlint --silent",
+    "lint:strict": "oxlint --deny-warnings",
+    "check:file": "oxlint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:file:fmt": "prettier --check"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "commander": "^14.0.1",
+    "open": "^10.2.0",
+    "picocolors": "^1.1.1",
+    "picomatch": "^4.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.4",
+    "@types/picomatch": "^4.0.2",
+    "oxlint": "^1.63.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.20.6",
+    "typescript": "~5.9.3",
+    "vitest": "^2.1.9"
+  }
+}

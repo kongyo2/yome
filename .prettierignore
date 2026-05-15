@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+*.min.js
+package-lock.json
+frontend/node_modules
+frontend/dist
+testdata
