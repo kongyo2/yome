@@ -7,7 +7,7 @@ import { State } from "./state.js";
 let tmp: string;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "mo-state-"));
+  tmp = await mkdtemp(join(tmpdir(), "yome-state-"));
 });
 
 afterEach(async () => {

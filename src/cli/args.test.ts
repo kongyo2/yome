@@ -7,7 +7,7 @@ import { resolveArgs, resolveUnwatchArgs } from "./args.js";
 let tmp: string;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "mo-args-"));
+  tmp = mkdtempSync(join(tmpdir(), "yome-args-"));
 });
 
 afterEach(() => {

@@ -867,8 +867,11 @@ export async function writeRestoreFile(data: RestoreData): Promise<string> {
   const { tmpdir } = await import("node:os");
   const { writeFile: wf } = await import("node:fs/promises");
   const { randomBytes } = await import("node:crypto");
-  const p = join(tmpdir(), `mo-restore-${randomBytes(8).toString("hex")}.json`);
-  await wf(p, JSON.stringify(data));
+  const p = join(
+    tmpdir(),
+    `yome-restore-${randomBytes(8).toString("hex")}.json`,
+  );
+  await wf(p, JSON.stringify(data), { mode: 0o600 });
   return p;
 }
 

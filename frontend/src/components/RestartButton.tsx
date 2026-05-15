@@ -38,7 +38,7 @@ export function RestartButton() {
   }, [status]);
 
   const title = version
-    ? `mo ${version.version} (${version.revision})\nClick to restart`
+    ? `yome ${version.version} (${version.revision})\nClick to restart`
     : "Restart server";
 
   return (

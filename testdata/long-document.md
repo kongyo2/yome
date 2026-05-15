@@ -110,15 +110,15 @@ export async function fetchFileContent(
 
 > **Q: How do I add a file to an existing session?**
 >
-> Run `mo another.md` in a separate terminal. It will detect the running server and add the file.
+> Run `yome another.md` in a separate terminal. It will detect the running server and add the file.
 
 > **Q: How do I change the port?**
 >
-> Use the `--port` flag: `mo --port 8080 file.md`
+> Use the `--port` flag: `yome --port 8080 file.md`
 
 > **Q: Can I group files?**
 >
-> Yes, use the `--target` flag: `mo --target docs README.md CHANGELOG.md`
+> Yes, use the `--target` flag: `yome --target docs README.md CHANGELOG.md`
 
 ## Section 6: Changelog
 

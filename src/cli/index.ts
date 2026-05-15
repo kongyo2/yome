@@ -130,8 +130,8 @@ async function discoverPorts(): Promise<number[]> {
   for (const e of entries) {
     if (!e.isFile()) continue;
     const name = e.name;
-    if (!name.startsWith("mo-") || !name.endsWith(".log")) continue;
-    const raw = name.substring(3, name.length - 4);
+    if (!name.startsWith("yome-") || !name.endsWith(".log")) continue;
+    const raw = name.substring(5, name.length - 4);
     const p = Number(raw);
     if (!Number.isFinite(p) || !Number.isInteger(p) || String(p) !== raw)
       continue;
@@ -156,7 +156,7 @@ async function doStatus(jsonMode: boolean): Promise<number> {
   const ports = await discoverPorts();
   if (ports.length === 0) {
     if (jsonMode) writeJson([]);
-    else process.stderr.write("mo: no mo server found\n");
+    else process.stderr.write("yome: no yome server found\n");
     return 0;
   }
   let found = false;
@@ -213,7 +213,7 @@ async function doStatus(jsonMode: boolean): Promise<number> {
   if (jsonMode) {
     writeJson(jsonEntries);
   } else if (!found) {
-    process.stderr.write("mo: no mo server found\n");
+    process.stderr.write("yome: no yome server found\n");
   }
   return 0;
 }
@@ -230,7 +230,7 @@ async function doShutdown(addr: string): Promise<void> {
     throw new Error(`unexpected response from server: ${resp.status}`);
   }
   logger.info("shutdown request sent", { addr });
-  process.stderr.write(`mo: shutdown request sent to http://${addr}\n`);
+  process.stderr.write(`yome: shutdown request sent to http://${addr}\n`);
 }
 
 async function doRestart(addr: string): Promise<void> {
@@ -245,7 +245,7 @@ async function doRestart(addr: string): Promise<void> {
     throw new Error(`unexpected response from server: ${resp.status}`);
   }
   logger.info("restart request sent", { addr });
-  process.stderr.write(`mo: restart request sent to http://${addr}\n`);
+  process.stderr.write(`yome: restart request sent to http://${addr}\n`);
 }
 
 async function doUnwatch(
@@ -270,7 +270,7 @@ async function doUnwatch(
       throw new Error(`unexpected response from server: ${resp.status}`);
     }
     logger.info("pattern removed", { pattern: pat, group: groupName });
-    process.stderr.write(`mo: unwatched ${pat}\n`);
+    process.stderr.write(`yome: unwatched ${pat}\n`);
   }
 }
 
@@ -490,15 +490,15 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     }
     const hasBackup = backupExists(flags.port);
     if (!wasServerRunning && !hasBackup) {
-      process.stderr.write(`mo: no saved session for port ${flags.port}\n`);
+      process.stderr.write(`yome: no saved session for port ${flags.port}\n`);
       return 0;
     }
     const ok = await promptYesNo(
-      `mo: clear saved session for port ${flags.port}? [Y/n] `,
+      `yome: clear saved session for port ${flags.port}? [Y/n] `,
       true,
     );
     if (!ok) {
-      process.stderr.write("mo: canceled\n");
+      process.stderr.write("yome: canceled\n");
       return 0;
     }
     if (wasServerRunning) {
@@ -516,11 +516,11 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
         dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
       });
       process.stderr.write(
-        `mo: cleared session and restarted server on port ${flags.port}\n`,
+        `yome: cleared session and restarted server on port ${flags.port}\n`,
       );
     } else {
       process.stderr.write(
-        `mo: cleared saved session for port ${flags.port}\n`,
+        `yome: cleared saved session for port ${flags.port}\n`,
       );
     }
     return 0;
@@ -572,11 +572,11 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       const names = displayNames(closed);
       for (const n of names) process.stdout.write(`  ${n}\n`);
       process.stderr.write(
-        `mo: closed ${closed.length} file(s) from http://${addr}\n`,
+        `yome: closed ${closed.length} file(s) from http://${addr}\n`,
       );
     }
     if (errors.length > 0) {
-      for (const e of errors) process.stderr.write(`mo: ${e.message}\n`);
+      for (const e of errors) process.stderr.write(`yome: ${e.message}\n`);
       return 1;
     }
     return 0;
@@ -698,14 +698,14 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
         addr,
       });
       emitServeOutput(addr, deeplinks, false, flags.json);
-      process.stderr.write(`mo: added ${added} item(s) to http://${addr}\n`);
+      process.stderr.write(`yome: added ${added} item(s) to http://${addr}\n`);
 
       // Surface real per-file failures.
       for (const e of pf.errors) {
-        process.stderr.write(`mo: ${e.message}\n`);
+        process.stderr.write(`yome: ${e.message}\n`);
       }
       for (const e of pp.errors) {
-        process.stderr.write(`mo: ${e.message}\n`);
+        process.stderr.write(`yome: ${e.message}\n`);
       }
 
       if (isNewGroup || flags.open) await openBrowser(addr, flags);
@@ -734,7 +734,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     ) {
       logger.info("restoring session from backup", { port: flags.port });
       process.stderr.write(
-        `mo: restoring previous session for port ${flags.port}\n`,
+        `yome: restoring previous session for port ${flags.port}\n`,
       );
       mergedFiles = mergeGroups(filtered.files, filesByGroup);
       mergedPatterns = mergeGroups(filtered.patterns, patternsByGroup);
@@ -761,7 +761,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     process.stderr.write(
       pc.bold(pc.yellow("SECURITY WARNING: ")) +
         pc.yellow(
-          `Binding to ${bind} instead of localhost. mo has no authentication -- remote clients can:`,
+          `Binding to ${bind} instead of localhost. yome has no authentication -- remote clients can:`,
         ) +
         "\n",
     );
@@ -776,7 +776,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     );
     const ok = await promptYesNo("Continue? [y/N] ");
     if (!ok) {
-      process.stderr.write("mo: canceled\n");
+      process.stderr.write("yome: canceled\n");
       return 0;
     }
   }
@@ -886,7 +886,7 @@ async function startBackground(
       }
     }
     emitServeOutput(addr, deeplinks, true, flags.json);
-    process.stderr.write(`mo: serving at http://${addr} (pid ${pid})\n`);
+    process.stderr.write(`yome: serving at http://${addr} (pid ${pid})\n`);
     await openBrowser(addr, flags);
     return 0;
   } catch (err) {
@@ -900,22 +900,22 @@ async function startBackground(
   }
 }
 
-const LONG_DESC = `mo is a Markdown viewer that opens .md files in a browser with live-reload.
+const LONG_DESC = `yome is a Markdown viewer that opens .md files in a browser with live-reload.
 
 It runs in the background, serving Markdown files using a built-in React SPA,
 and automatically refreshes the browser when files are saved.
 
 Examples:
-  mo README.md                          Open a single file
-  mo README.md CHANGELOG.md docs/*.md   Open multiple files
-  mo spec.md --target design            Open in a named group
-  mo draft.md --port 6276               Use a different port
-  cat notes.md | mo                     Read Markdown from stdin
-  cmd | mo --target output              Pipe command output into a group
+  yome README.md                          Open a single file
+  yome README.md CHANGELOG.md docs/*.md   Open multiple files
+  yome spec.md --target design            Open in a named group
+  yome draft.md --port 6276               Use a different port
+  cat notes.md | yome                     Read Markdown from stdin
+  cmd | yome --target output              Pipe command output into a group
 
 Single Server, Multiple Files:
-  By default, mo runs a single server on port 6275.
-  If a mo server is already running on the same port, subsequent mo
+  By default, yome runs a single server on port 6275.
+  If a yome server is already running on the same port, subsequent yome
   invocations add files to the existing session instead of starting a new one.
 
 Groups:
@@ -924,17 +924,17 @@ Groups:
   and its own sidebar in the browser.
 
 Starting and Stopping:
-  mo runs in the background by default. Use --status to inspect, --shutdown
+  yome runs in the background by default. Use --status to inspect, --shutdown
   to stop, and --restart to restart while preserving session state.
   Use --foreground to keep the server attached to the terminal.
 
 Session Restore:
-  mo automatically saves session state. When starting a new server, the
+  yome automatically saves session state. When starting a new server, the
   previous session is restored and merged with any specified files.
   Use --clear to remove a saved session.
 
 Live-Reload:
-  mo watches all opened files for changes via fs events. When a file is
+  yome watches all opened files for changes via fs events. When a file is
   saved, the browser automatically re-renders the content.
 
 Watch mode and glob patterns:
@@ -943,14 +943,14 @@ Watch mode and glob patterns:
   files are picked up automatically. Combine with --recursive (-R) to
   descend into subdirectories.
 
-WARNING: --bind with a non-loopback address exposes mo to the network
+WARNING: --bind with a non-loopback address exposes yome to the network
 without any authentication. A confirmation prompt is shown before starting.`;
 
 export async function runCli(): Promise<number> {
   const program = new Command();
   program
     .name(Name)
-    .description("mo is a Markdown viewer that opens .md files in a browser.")
+    .description("yome is a Markdown viewer that opens .md files in a browser.")
     .addHelpText("after", "\n" + LONG_DESC)
     .version(`${Version} ${Revision}`)
     .argument("[files...]", "Files, directories, or glob patterns")
@@ -973,17 +973,20 @@ export async function runCli(): Promise<number> {
     .option("--no-open", "Do not open browser automatically")
     .option(
       "--shutdown",
-      "Shut down the running mo server on the specified port",
+      "Shut down the running yome server on the specified port",
     )
-    .option("--restart", "Restart the running mo server on the specified port")
+    .option(
+      "--restart",
+      "Restart the running yome server on the specified port",
+    )
     .addOption(
       new CommanderOption(
         "--restore <file>",
         "Restore state from file (internal use)",
       ).hideHelp(),
     )
-    .option("--foreground", "Run mo server in foreground (do not background)")
-    .option("--status", "Show status of all running mo servers")
+    .option("--foreground", "Run yome server in foreground (do not background)")
+    .option("--status", "Show status of all running yome servers")
     .option(
       "-w, --watch",
       "Treat directory and glob arguments as watch patterns",
@@ -1009,7 +1012,7 @@ export async function runCli(): Promise<number> {
   const openExplicit = process.argv.includes("--open");
   const noOpenExplicit = process.argv.includes("--no-open");
   if (openExplicit && noOpenExplicit) {
-    process.stderr.write("mo: --open and --no-open are mutually exclusive\n");
+    process.stderr.write("yome: --open and --no-open are mutually exclusive\n");
     return 1;
   }
 
@@ -1044,7 +1047,7 @@ export async function runCli(): Promise<number> {
 
   if (flags.shutdown && flags.restart) {
     process.stderr.write(
-      "mo: --shutdown and --restart are mutually exclusive\n",
+      "yome: --shutdown and --restart are mutually exclusive\n",
     );
     return 1;
   }

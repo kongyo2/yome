@@ -40,6 +40,26 @@ function textResponse(res: ServerResponse, status: number, body: string): void {
   res.end(body + "\n");
 }
 
+// Reject browser cross-site requests on control-plane endpoints. CLI clients
+// send neither Sec-Fetch-Site nor Origin, so they pass through unchanged.
+function isSameOriginRequest(req: IncomingMessage): boolean {
+  const sfs = req.headers["sec-fetch-site"];
+  if (typeof sfs === "string") {
+    return sfs === "same-origin" || sfs === "same-site" || sfs === "none";
+  }
+  const origin = req.headers["origin"];
+  if (typeof origin === "string" && origin !== "" && origin !== "null") {
+    const host = req.headers["host"];
+    if (typeof host !== "string" || host === "") return false;
+    try {
+      return new URL(origin).host === host;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function readJsonBody<T>(
   req: IncomingMessage,
   maxBytes: number,
@@ -464,7 +484,10 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res.end();
   }
 
-  async function handleRestart(_req: IncomingMessage, res: ServerResponse) {
+  async function handleRestart(req: IncomingMessage, res: ServerResponse) {
+    if (!isSameOriginRequest(req)) {
+      return textResponse(res, 403, "cross-site request rejected");
+    }
     let restoreFile: string;
     try {
       restoreFile = await writeRestoreFile(state.snapshotRestoreData());
@@ -476,7 +499,10 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     state.signalRestart(restoreFile);
   }
 
-  function handleShutdown(_req: IncomingMessage, res: ServerResponse) {
+  function handleShutdown(req: IncomingMessage, res: ServerResponse) {
+    if (!isSameOriginRequest(req)) {
+      return textResponse(res, 403, "cross-site request rejected");
+    }
     res.statusCode = 202;
     res.end();
     state.signalShutdown();

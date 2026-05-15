@@ -53,4 +53,4 @@ jobs:
         run: cd frontend && npx vitest run
 
       - name: Smoke test (CLI version)
-        run: node dist/bin/mo.js --version
+        run: node dist/bin/yome.js --version

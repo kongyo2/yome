@@ -6,7 +6,7 @@ import { isPlainLeftClick } from "../utils/linkClick";
 import { FileContextMenu } from "./FileContextMenu";
 import { FileIcon } from "./FileIcon";
 
-const COLLAPSED_STORAGE_KEY = "mo-sidebar-tree-collapsed";
+const COLLAPSED_STORAGE_KEY = "yome-sidebar-tree-collapsed";
 
 function getInitialCollapsed(group: string): Set<string> {
   try {

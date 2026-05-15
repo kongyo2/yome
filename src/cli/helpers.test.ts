@@ -62,7 +62,7 @@ describe("mergeGroups", () => {
 describe("filterValidRestoreData", () => {
   let tmp: string;
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "mo-filter-"));
+    tmp = mkdtempSync(join(tmpdir(), "yome-filter-"));
   });
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });

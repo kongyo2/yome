@@ -8,7 +8,7 @@ let tmp: string;
 let state: State;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "mo-watch-"));
+  tmp = await mkdtemp(join(tmpdir(), "yome-watch-"));
   state = new State({ fileChangeDebounceMs: 30 });
 });
 

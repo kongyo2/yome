@@ -10,7 +10,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/_/": process.env["MO_DEV_BACKEND"] ?? "http://localhost:16275",
+      "/_/": process.env["YOME_DEV_BACKEND"] ?? "http://localhost:16275",
     },
   },
   test: {

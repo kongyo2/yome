@@ -16,7 +16,7 @@ interface TocPanelProps {
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 240;
-const STORAGE_KEY = "mo-toc-width";
+const STORAGE_KEY = "yome-toc-width";
 
 function getInitialWidth(): number {
   const stored = localStorage.getItem(STORAGE_KEY);

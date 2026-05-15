@@ -15,7 +15,7 @@ graph LR
 
 ```go
 func main() {
-    fmt.Println("Hello, mo!")
+    fmt.Println("Hello, yome!")
 }
 ```
 
@@ -41,7 +41,7 @@ classDiagram
 
 ```json
 {
-  "name": "mo",
+  "name": "yome",
   "version": "0.1.0"
 }
 ```

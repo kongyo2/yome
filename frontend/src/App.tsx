@@ -37,11 +37,11 @@ import {
 } from "./utils/groups";
 import { isMarkdownFile } from "./utils/filetype";
 
-const VIEWMODE_STORAGE_KEY = "mo-sidebar-viewmode";
-const WIDTH_STORAGE_KEY = "mo-layout-width";
-const SHOW_TITLE_STORAGE_KEY = "mo-sidebar-show-title";
-export const FONT_SIZE_STORAGE_KEY = "mo-font-size";
-export const TOC_OPEN_STORAGE_KEY = "mo-toc-open";
+const VIEWMODE_STORAGE_KEY = "yome-sidebar-viewmode";
+const WIDTH_STORAGE_KEY = "yome-layout-width";
+const SHOW_TITLE_STORAGE_KEY = "yome-sidebar-show-title";
+export const FONT_SIZE_STORAGE_KEY = "yome-font-size";
+export const TOC_OPEN_STORAGE_KEY = "yome-toc-open";
 
 export function getInitialFontSize(): FontSize {
   try {
@@ -78,10 +78,10 @@ export function getInitialTocOpenMap(): Record<string, boolean> {
 export function formatTitle(
   fileEntry: Pick<FileEntry, "name" | "title"> | undefined,
 ): string {
-  if (fileEntry == undefined) return "mo";
+  if (fileEntry == undefined) return "yome";
   const { name, title } = fileEntry;
   const fullTitle = title === undefined ? name : `${title} - ${name}`;
-  return `${fullTitle} | mo`;
+  return `${fullTitle} | yome`;
 }
 
 export function isTocOpenForFile(

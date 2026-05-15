@@ -20,7 +20,7 @@ if (existsSync(frontendSrc)) {
   cpSync(frontendSrc, frontendDest, { recursive: true });
 }
 
-const binPath = join(distDir, "bin", "mo.js");
+const binPath = join(distDir, "bin", "yome.js");
 if (existsSync(binPath)) {
   const content = readFileSync(binPath, "utf8");
   if (!content.startsWith("#!")) {

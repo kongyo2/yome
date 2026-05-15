@@ -15,14 +15,14 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const distBin = pathResolve(moduleDir, "..", "..", "dist", "bin", "mo.js");
-const srcBin = pathResolve(moduleDir, "..", "bin", "mo.ts");
+const distBin = pathResolve(moduleDir, "..", "..", "dist", "bin", "yome.js");
+const srcBin = pathResolve(moduleDir, "..", "bin", "yome.ts");
 const haveDist = existsSync(distBin);
 const launchArgs = haveDist
   ? [distBin]
   : ["--no-warnings", "--experimental-strip-types", "--import", "tsx", srcBin];
 
-function runMo(
+function runYome(
   args: string[],
   opts: { input?: string; cwd?: string; env?: Record<string, string> } = {},
 ) {
@@ -45,20 +45,20 @@ let port: number;
 beforeAll(() => {
   if (!haveDist && !existsSync(srcBin)) {
     throw new Error(
-      "Neither dist/bin/mo.js nor src/bin/mo.ts exists; build first.",
+      "Neither dist/bin/yome.js nor src/bin/yome.ts exists; build first.",
     );
   }
 });
 
 beforeEach(() => {
-  stateDir = mkdtempSync(join(tmpdir(), "mo-e2e-"));
+  stateDir = mkdtempSync(join(tmpdir(), "yome-e2e-"));
   // Pick a high port that we expect to be free in the test container.
   port = 30000 + Math.floor(Math.random() * 20_000);
 });
 
 afterEach(async () => {
   // Best-effort shutdown if a server is still up.
-  runMo(["--port", String(port), "--shutdown"], {
+  runYome(["--port", String(port), "--shutdown"], {
     env: { XDG_STATE_HOME: stateDir },
   });
   await wait(200);
@@ -69,28 +69,28 @@ afterAll(async () => {
   // Nothing global to clean up; per-test afterEach handles it.
 });
 
-describe("mo CLI", () => {
+describe("yome CLI", () => {
   it("--version prints the version", () => {
-    const r = runMo(["--version"]);
+    const r = runYome(["--version"]);
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/1\.5\.5/);
   });
 
   it("--help prints usage", () => {
-    const r = runMo(["--help"]);
+    const r = runYome(["--help"]);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/Usage: mo/);
+    expect(r.stdout).toMatch(/Usage: yome/);
     expect(r.stdout).toMatch(/--target/);
   });
 
   it("--status reports the default port as stopped after log file is created", () => {
-    const r = runMo(["--status"], { env: { XDG_STATE_HOME: stateDir } });
+    const r = runYome(["--status"], { env: { XDG_STATE_HOME: stateDir } });
     expect(r.status).toBe(0);
-    expect(r.stdout + r.stderr).toMatch(/stopped|no mo server found/);
+    expect(r.stdout + r.stderr).toMatch(/stopped|no yome server found/);
   });
 
   it("--status --json emits an array of entries", () => {
-    const r = runMo(["--status", "--json"], {
+    const r = runYome(["--status", "--json"], {
       env: { XDG_STATE_HOME: stateDir },
     });
     expect(r.status).toBe(0);
@@ -172,7 +172,7 @@ describe("mo CLI", () => {
   it("rejects an invalid group name", () => {
     const tmpFile = join(stateDir, "a.md");
     writeFileSync(tmpFile, "# A");
-    const r = runMo(
+    const r = runYome(
       [
         "--target",
         "_/internal",
@@ -191,7 +191,7 @@ describe("mo CLI", () => {
   });
 
   it("--recursive without args errors out", () => {
-    const r = runMo(["-R"], { env: { XDG_STATE_HOME: stateDir } });
+    const r = runYome(["-R"], { env: { XDG_STATE_HOME: stateDir } });
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/--recursive.*requires a directory/);
   });

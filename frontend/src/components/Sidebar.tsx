@@ -27,7 +27,7 @@ import { FileIcon } from "./FileIcon";
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 260;
-const STORAGE_KEY = "mo-sidebar-width";
+const STORAGE_KEY = "yome-sidebar-width";
 
 function getInitialWidth(): number {
   const stored = localStorage.getItem(STORAGE_KEY);
