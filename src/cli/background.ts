@@ -29,6 +29,7 @@ export interface SpawnOpts {
   restoreFile?: string;
   dangerouslyAllowRemoteAccess?: boolean;
   bind: string;
+  noRestoreSession?: boolean;
 }
 
 export function spawnDetached(opts: SpawnOpts): { pid: number } {
@@ -44,6 +45,9 @@ export function spawnDetached(opts: SpawnOpts): { pid: number } {
   argv.push("--foreground");
   if (opts.restoreFile) {
     argv.push("--restore", opts.restoreFile);
+  }
+  if (opts.noRestoreSession) {
+    argv.push("--no-restore-session");
   }
   if (opts.dangerouslyAllowRemoteAccess) {
     argv.push("--dangerously-allow-remote-access");

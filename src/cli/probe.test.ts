@@ -3,6 +3,7 @@ import { type AddressInfo } from "node:net";
 import { type Server } from "node:http";
 import { State } from "../server/state.js";
 import { createServer } from "../server/http.js";
+import { Version } from "../version.js";
 import {
   httpGetJson,
   httpRequestJson,
@@ -33,7 +34,7 @@ afterEach(async () => {
 describe("probeServer", () => {
   it("returns status when server is running", async () => {
     const r = await probeServer(addr, 2000);
-    expect(r.status.version).toBe("1.5.8");
+    expect(r.status.version).toBe(Version);
     expect(Array.isArray(r.groups)).toBe(true);
   });
   it("rejects when nothing is listening", async () => {
@@ -47,7 +48,7 @@ describe("httpGetJson", () => {
       `http://${addr}/_/api/version`,
       2000,
     );
-    expect(data.version).toBe("1.5.8");
+    expect(data.version).toBe(Version);
   });
 });
 
@@ -66,7 +67,7 @@ describe("httpRequestJson", () => {
 describe("waitForReady", () => {
   it("resolves immediately when server is up", async () => {
     const status = await waitForReady(addr, 2000);
-    expect(status?.version).toBe("1.5.8");
+    expect(status?.version).toBe(Version);
   });
 });
 

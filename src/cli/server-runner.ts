@@ -20,6 +20,7 @@ export interface StartServerOpts {
   uploadedFiles: Array<{ name: string; content: string; group: string }>;
   noOpen: boolean;
   target: string;
+  disableBackup?: boolean;
   onReady?: (deeplinks: DeeplinkEntry[]) => void;
 }
 
@@ -33,11 +34,13 @@ export async function startServer(
 ): Promise<ServerRunResult> {
   const state = new State();
 
-  state.enableBackup((data) => {
-    void saveBackup(opts.port, data).catch((err) =>
-      logger.warn("failed to save backup", { error: String(err) }),
-    );
-  });
+  if (!opts.disableBackup) {
+    state.enableBackup((data) => {
+      void saveBackup(opts.port, data).catch((err) =>
+        logger.warn("failed to save backup", { error: String(err) }),
+      );
+    });
+  }
 
   const deeplinks: DeeplinkEntry[] = [];
   let totalFiles = 0;

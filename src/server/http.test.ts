@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { type AddressInfo } from "node:net";
 import { State } from "./state.js";
 import { createServer } from "./http.js";
+import { Version } from "../version.js";
 
 let tmp: string;
 let state: State;
@@ -86,7 +87,7 @@ describe("GET /_/api/version", () => {
     const r = await get("/_/api/version");
     expect(r.status).toBe(200);
     const data = JSON.parse(r.body);
-    expect(data.version).toBe("1.5.8");
+    expect(data.version).toBe(Version);
     expect(data.revision).toBe("HEAD");
   });
 });
@@ -96,7 +97,7 @@ describe("GET /_/api/status", () => {
     const r = await get("/_/api/status");
     expect(r.status).toBe(200);
     const data = JSON.parse(r.body);
-    expect(data.version).toBe("1.5.8");
+    expect(data.version).toBe(Version);
     expect(data.pid).toBe(process.pid);
     expect(Array.isArray(data.groups)).toBe(true);
   });
