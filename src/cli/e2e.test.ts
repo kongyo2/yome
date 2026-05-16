@@ -406,4 +406,52 @@ describe("yome CLI", () => {
     const entry = data.find((d) => d.url === `http://localhost:${orphanPort}`);
     expect(entry?.orphanBackup).toBe(true);
   });
+
+  it("--clear --yes removes an orphan backup without prompting", () => {
+    const backupDir = join(stateDir, "yome", "backup");
+    mkdirSync(backupDir, { recursive: true });
+    const targetPort = port + 200;
+    const backupFile = join(backupDir, `yome-${targetPort}.json`);
+    writeFileSync(
+      backupFile,
+      JSON.stringify({ groups: { default: ["/some/path.md"] } }),
+    );
+    expect(existsSync(backupFile)).toBe(true);
+
+    const r = runYome(["--clear", "--yes", "--port", String(targetPort)], {
+      env: { XDG_STATE_HOME: stateDir },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/cleared saved session/);
+    expect(r.stderr).not.toMatch(/clear saved session.*\[Y\/n\]/);
+    expect(existsSync(backupFile)).toBe(false);
+  });
+
+  it("-y short form also skips the --clear confirmation prompt", () => {
+    const backupDir = join(stateDir, "yome", "backup");
+    mkdirSync(backupDir, { recursive: true });
+    const targetPort = port + 201;
+    const backupFile = join(backupDir, `yome-${targetPort}.json`);
+    writeFileSync(
+      backupFile,
+      JSON.stringify({ groups: { default: ["/some/path.md"] } }),
+    );
+
+    const r = runYome(["--clear", "-y", "--port", String(targetPort)], {
+      env: { XDG_STATE_HOME: stateDir },
+    });
+    expect(r.status).toBe(0);
+    expect(existsSync(backupFile)).toBe(false);
+  });
+
+  it("--clear without --yes does not consume stdin EOF and stays well-behaved", () => {
+    // With nothing to clear, --clear takes the early-exit branch and never
+    // reaches the prompt — exercising this guards against a regression where
+    // the prompt would hang on closed stdin.
+    const r = runYome(["--clear", "--port", String(port + 202)], {
+      env: { XDG_STATE_HOME: stateDir },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/no saved session for port/);
+  });
 });
