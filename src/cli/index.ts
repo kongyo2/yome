@@ -64,6 +64,7 @@ interface Flags {
   close: boolean;
   clear: boolean;
   json: boolean;
+  yes: boolean;
   dangerouslyAllowRemoteAccess: boolean;
 }
 
@@ -573,13 +574,15 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       process.stderr.write(`yome: no saved session for port ${flags.port}\n`);
       return 0;
     }
-    const ok = await promptYesNo(
-      `yome: clear saved session for port ${flags.port}? [Y/n] `,
-      true,
-    );
-    if (!ok) {
-      process.stderr.write("yome: canceled\n");
-      return 0;
+    if (!flags.yes) {
+      const ok = await promptYesNo(
+        `yome: clear saved session for port ${flags.port}? [Y/n] `,
+        true,
+      );
+      if (!ok) {
+        process.stderr.write("yome: canceled\n");
+        return 0;
+      }
     }
     if (wasServerRunning) {
       await doShutdown(addr);
@@ -866,10 +869,12 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     process.stderr.write(
       pc.yellow("  - Shut down or restart the server") + "\n",
     );
-    const ok = await promptYesNo("Continue? [y/N] ");
-    if (!ok) {
-      process.stderr.write("yome: canceled\n");
-      return 0;
+    if (!flags.yes) {
+      const ok = await promptYesNo("Continue? [y/N] ");
+      if (!ok) {
+        process.stderr.write("yome: canceled\n");
+        return 0;
+      }
     }
   }
 
@@ -1031,7 +1036,8 @@ Session Restore:
   Use --clear to remove a saved session, or pass --no-restore-session to
   start an ephemeral one-off server that neither restores nor overwrites
   the saved backup. --shutdown leaves the saved session intact (for the
-  next start); use --clear to truly forget a port.
+  next start); use --clear to truly forget a port. Pair --clear with
+  --yes (-y) in scripts to skip the confirmation prompt.
 
 Live-Reload:
   yome watches all opened files for changes via fs events. When a file is
@@ -1107,6 +1113,10 @@ export async function runCli(): Promise<number> {
     .option("--clear", "Clear saved session for the specified port")
     .option("--json", "Output structured data as JSON to stdout")
     .option(
+      "-y, --yes",
+      "Assume yes for all confirmation prompts (e.g. --clear, non-loopback bind warning); useful in scripts and CI",
+    )
+    .option(
       "--dangerously-allow-remote-access",
       "Allow remote access without authentication. Recommended only for trusted networks.",
     );
@@ -1154,6 +1164,7 @@ export async function runCli(): Promise<number> {
     close: opts["close"] === true,
     clear: opts["clear"] === true,
     json: opts["json"] === true,
+    yes: opts["yes"] === true,
     dangerouslyAllowRemoteAccess: opts["dangerouslyAllowRemoteAccess"] === true,
   };
 
