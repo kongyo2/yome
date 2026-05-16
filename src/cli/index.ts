@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import pc from "picocolors";
 import open from "open";
 import {
+  backupDir,
   exists as backupExists,
   load as backupLoad,
   remove as backupRemove,
@@ -54,6 +55,7 @@ interface Flags {
   shutdown: boolean;
   restart: boolean;
   restore: string;
+  restoreSession: boolean;
   foreground: boolean;
   status: boolean;
   watch: boolean;
@@ -120,10 +122,14 @@ function emitServeOutput(
   }
 }
 
-async function discoverPorts(): Promise<number[]> {
+async function listPortsFromDir(
+  dir: string,
+  prefix: string,
+  suffix: string,
+): Promise<number[]> {
   let entries: import("node:fs").Dirent[] = [];
   try {
-    entries = await readdir(logDir(), { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -131,15 +137,40 @@ async function discoverPorts(): Promise<number[]> {
   for (const e of entries) {
     if (!e.isFile()) continue;
     const name = e.name;
-    if (!name.startsWith("yome-") || !name.endsWith(".log")) continue;
-    const raw = name.substring(5, name.length - 4);
+    if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const raw = name.substring(prefix.length, name.length - suffix.length);
     const p = Number(raw);
     if (!Number.isFinite(p) || !Number.isInteger(p) || String(p) !== raw)
       continue;
     ports.push(p);
   }
-  ports.sort((a, b) => a - b);
   return ports;
+}
+
+interface DiscoveredPorts {
+  all: number[];
+  // Ports that have a backup JSON but no log file. These have no observable
+  // history in `--status` otherwise — surfacing them here is what makes
+  // long-lived orphan backups discoverable.
+  backupOnly: Set<number>;
+}
+
+async function discoverPortsDetailed(): Promise<DiscoveredPorts> {
+  const [logPorts, backupPorts] = await Promise.all([
+    listPortsFromDir(logDir(), "yome-", ".log"),
+    listPortsFromDir(backupDir(), "yome-", ".json"),
+  ]);
+  const logSet = new Set(logPorts);
+  const backupOnly = new Set<number>();
+  for (const p of backupPorts) {
+    if (!logSet.has(p)) backupOnly.add(p);
+  }
+  const all = [...new Set([...logPorts, ...backupPorts])].sort((a, b) => a - b);
+  return { all, backupOnly };
+}
+
+async function discoverPorts(): Promise<number[]> {
+  return (await discoverPortsDetailed()).all;
 }
 
 interface StatusResponse {
@@ -154,7 +185,7 @@ interface StatusResponse {
 }
 
 async function doStatus(jsonMode: boolean): Promise<number> {
-  const ports = await discoverPorts();
+  const { all: ports, backupOnly } = await discoverPortsDetailed();
   if (ports.length === 0) {
     if (jsonMode) writeJson([]);
     else process.stderr.write("yome: no yome server found\n");
@@ -173,10 +204,17 @@ async function doStatus(jsonMode: boolean): Promise<number> {
       );
     } catch {
       found = true;
+      const orphanBackup = backupOnly.has(p);
       if (jsonMode) {
-        jsonEntries.push({ url: `http://${addr}`, status: "stopped" });
+        const entry: Record<string, unknown> = {
+          url: `http://${addr}`,
+          status: "stopped",
+        };
+        if (orphanBackup) entry["orphanBackup"] = true;
+        jsonEntries.push(entry);
       } else {
-        process.stdout.write(`http://${addr} (stopped)\n`);
+        const note = orphanBackup ? " (saved session backup only)" : "";
+        process.stdout.write(`http://${addr} (stopped)${note}\n`);
         if (i < ports.length - 1) process.stdout.write("\n");
       }
       continue;
@@ -772,24 +810,30 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   let uploadedFiles: Array<{ name: string; content: string; group: string }> =
     [];
 
-  try {
-    const rd = await backupLoad(flags.port);
-    const filtered = filterValidRestoreData(rd);
-    if (
-      filtered.files.size > 0 ||
-      filtered.patterns.size > 0 ||
-      filtered.uploadedFiles.length > 0
-    ) {
-      logger.info("restoring session from backup", { port: flags.port });
-      process.stderr.write(
-        `yome: restoring previous session for port ${flags.port}\n`,
-      );
-      mergedFiles = mergeGroups(filtered.files, filesByGroup);
-      mergedPatterns = mergeGroups(filtered.patterns, patternsByGroup);
-      uploadedFiles = filtered.uploadedFiles;
+  if (flags.restoreSession) {
+    try {
+      const rd = await backupLoad(flags.port);
+      const filtered = filterValidRestoreData(rd);
+      if (
+        filtered.files.size > 0 ||
+        filtered.patterns.size > 0 ||
+        filtered.uploadedFiles.length > 0
+      ) {
+        logger.info("restoring session from backup", { port: flags.port });
+        process.stderr.write(
+          `yome: restoring previous session for port ${flags.port}\n`,
+        );
+        mergedFiles = mergeGroups(filtered.files, filesByGroup);
+        mergedPatterns = mergeGroups(filtered.patterns, patternsByGroup);
+        uploadedFiles = filtered.uploadedFiles;
+      }
+    } catch (err) {
+      logger.warn("failed to load backup", { error: String(err) });
     }
-  } catch (err) {
-    logger.warn("failed to load backup", { error: String(err) });
+  } else {
+    logger.info("starting ephemeral session (--no-restore-session)", {
+      port: flags.port,
+    });
   }
 
   if (stdinData) uploadedFiles.push(stdinData);
@@ -880,6 +924,7 @@ async function runStartServer(
     uploadedFiles,
     noOpen: flags.noOpen,
     target: flags.target,
+    disableBackup: !flags.restoreSession,
     onReady: (deeplinks) => {
       emitServeOutput(addr, deeplinks, true, flags.json);
     },
@@ -891,6 +936,7 @@ async function runStartServer(
       port: flags.port,
       restoreFile: result.restartRequested,
       dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+      noRestoreSession: !flags.restoreSession,
     });
   }
   return result.exitCode;
@@ -918,6 +964,7 @@ async function startBackground(
       port: flags.port,
       restoreFile,
       dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+      noRestoreSession: !flags.restoreSession,
     });
     const pid = proc.pid;
     const status = await waitForReady(addr, 10_000);
@@ -981,7 +1028,10 @@ Starting and Stopping:
 Session Restore:
   yome automatically saves session state. When starting a new server, the
   previous session is restored and merged with any specified files.
-  Use --clear to remove a saved session.
+  Use --clear to remove a saved session, or pass --no-restore-session to
+  start an ephemeral one-off server that neither restores nor overwrites
+  the saved backup. --shutdown leaves the saved session intact (for the
+  next start); use --clear to truly forget a port.
 
 Live-Reload:
   yome watches all opened files for changes via fs events. When a file is
@@ -1034,6 +1084,10 @@ export async function runCli(): Promise<number> {
         "--restore <file>",
         "Restore state from file (internal use)",
       ).hideHelp(),
+    )
+    .option(
+      "--no-restore-session",
+      "Skip restoring (and saving) the per-port session backup; useful for ad-hoc, ephemeral previews",
     )
     .option("--foreground", "Run yome server in foreground (do not background)")
     .option("--status", "Show status of all running yome servers")
@@ -1089,6 +1143,9 @@ export async function runCli(): Promise<number> {
     shutdown: opts["shutdown"] === true,
     restart: opts["restart"] === true,
     restore: typeof opts["restore"] === "string" ? opts["restore"] : "",
+    // commander gives us `restoreSession: false` when the user passes
+    // --no-restore-session, otherwise leaves it `undefined` (treat as enabled).
+    restoreSession: opts["restoreSession"] !== false,
     foreground: opts["foreground"] === true,
     status: opts["status"] === true,
     watch: opts["watch"] === true,

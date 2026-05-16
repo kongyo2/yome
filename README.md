@@ -64,13 +64,18 @@ yome -w -R docs/
 ### サーバー操作
 
 ```bash
-yome --status              # 起動中の yome サーバー一覧を表示
+yome --status              # 起動中の yome サーバー一覧を表示 (orphan backup も検出)
 yome --shutdown            # 起動中の yome サーバーをすべて停止 (--port 指定時はそのポートのみ)
 yome --restart             # 状態を保ったまま再起動 (--port 指定時はそのポートのみ)
 yome --clear               # 保存済みセッションを破棄
 yome --close path/to.md    # 指定ファイルだけグループから外す
 yome --unwatch docs/       # watch パターンを解除
+
+# 単発の ad-hoc プレビュー (前回 session を復元せず、今回の内容も backup に残さない)
+yome SKILL.md --no-restore-session
 ```
+
+> `--shutdown` は次回起動でセッションを復元できるよう backup を残します。本当に忘れさせたい場合は `--clear` を使ってください。`--status` は backup だけが残っている (log は消えている) port を `(saved session backup only)` と表示します。
 
 ### 主なオプション
 
@@ -82,6 +87,7 @@ yome --unwatch docs/       # watch パターンを解除
 | `-w, --watch`                       | ディレクトリ / glob を watch パターンとして登録 |
 | `-R, --recursive`                   | サブディレクトリも再帰的に対象にする            |
 | `--open` / `--no-open`              | ブラウザの自動オープン制御                      |
+| `--no-restore-session`              | port のセッション backup を読み書きしない       |
 | `--foreground`                      | サーバーをフォアグラウンドで動かす              |
 | `--json`                            | 出力を JSON 形式で標準出力に流す                |
 | `--dangerously-allow-remote-access` | 非ループバックバインド時の警告を抑止            |

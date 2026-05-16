@@ -8,11 +8,19 @@ import {
   afterEach,
 } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
+import { Version } from "../version.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const distBin = pathResolve(moduleDir, "..", "..", "dist", "bin", "yome.js");
@@ -80,7 +88,7 @@ describe("yome CLI", () => {
   it("--version prints the version", () => {
     const r = runYome(["--version"]);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/1\.5\.8/);
+    expect(r.stdout).toContain(Version);
   });
 
   it("--help prints usage", () => {
@@ -166,7 +174,7 @@ describe("yome CLI", () => {
           version: string;
           groups: Array<{ name: string; files: Array<{ name: string }> }>;
         };
-        expect(status.version).toBe("1.5.8");
+        expect(status.version).toBe(Version);
         const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
         expect(names).toContain("smoke.md");
 
@@ -286,4 +294,116 @@ describe("yome CLI", () => {
       }
     },
   );
+
+  it(
+    "--no-restore-session does not restore prior backup and does not overwrite it",
+    { timeout: 30_000 },
+    async () => {
+      const backupDir = join(stateDir, "yome", "backup");
+      mkdirSync(backupDir, { recursive: true });
+      const backupFile = join(backupDir, `yome-${port}.json`);
+      const stalePath = join(stateDir, "stale.md");
+      writeFileSync(stalePath, "# Stale\n");
+      const originalBackup = JSON.stringify({
+        groups: { default: [stalePath] },
+      });
+      writeFileSync(backupFile, originalBackup);
+
+      const fresh = join(stateDir, "fresh.md");
+      writeFileSync(fresh, "# Fresh\n");
+
+      const child = spawn(
+        process.execPath,
+        [
+          ...launchArgs,
+          "--foreground",
+          "--port",
+          String(port),
+          "--bind",
+          "127.0.0.1",
+          "--no-open",
+          "--no-restore-session",
+          fresh,
+        ],
+        {
+          env: { ...process.env, XDG_STATE_HOME: stateDir },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stderrBuf = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderrBuf += chunk.toString();
+      });
+
+      try {
+        let ready = false;
+        for (let i = 0; i < 100 && !ready; i++) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
+            if (res.ok) {
+              ready = true;
+              break;
+            }
+          } catch {
+            // not yet
+          }
+          await wait(100);
+        }
+        expect(
+          ready,
+          `server did not become ready; child stderr:\n${stderrBuf}`,
+        ).toBe(true);
+
+        const status = (await fetch(
+          `http://127.0.0.1:${port}/_/api/status`,
+        ).then((r) => r.json())) as {
+          groups: Array<{ name: string; files: Array<{ name: string }> }>;
+        };
+        const names = status.groups.flatMap((g) => g.files.map((f) => f.name));
+        // Only the freshly-supplied file should be present; the stale entry
+        // from the pre-existing backup must NOT have been restored.
+        expect(names).toContain("fresh.md");
+        expect(names).not.toContain("stale.md");
+        expect(stderrBuf).not.toMatch(/restoring previous session/);
+
+        // Backup save should be disabled too — the file on disk should still
+        // hold the original snapshot, not be rewritten with [fresh.md].
+        // Wait past the BACKUP_DEBOUNCE_MS window (1s) just in case.
+        await wait(1500);
+        const after = readFileSync(backupFile, "utf8");
+        expect(after).toBe(originalBackup);
+      } finally {
+        child.kill("SIGINT");
+        await new Promise<void>((resolve) =>
+          child.once("exit", () => resolve()),
+        );
+      }
+    },
+  );
+
+  it("--status surfaces orphan backup files (backup present, no log)", () => {
+    const backupDir = join(stateDir, "yome", "backup");
+    mkdirSync(backupDir, { recursive: true });
+    const orphanPort = port + 100;
+    const orphanFile = join(backupDir, `yome-${orphanPort}.json`);
+    writeFileSync(
+      orphanFile,
+      JSON.stringify({ groups: { default: ["/some/path.md"] } }),
+    );
+
+    const r = runYome(["--status"], { env: { XDG_STATE_HOME: stateDir } });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`http://localhost:${orphanPort}`);
+    expect(r.stdout).toContain("(saved session backup only)");
+
+    const j = runYome(["--status", "--json"], {
+      env: { XDG_STATE_HOME: stateDir },
+    });
+    const data = JSON.parse(j.stdout) as Array<{
+      url: string;
+      orphanBackup?: boolean;
+    }>;
+    const entry = data.find((d) => d.url === `http://localhost:${orphanPort}`);
+    expect(entry?.orphanBackup).toBe(true);
+  });
 });
