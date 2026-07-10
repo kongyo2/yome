@@ -41,7 +41,11 @@ export function httpGetJson<T>(url: string, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const req = http.get(
       url,
-      { timeout: timeoutMs },
+      // agent:false → one fresh connection per request (Connection: close).
+      // Node ≥19 pools keep-alive sockets by default, and a pooled socket
+      // keeps being served by a half-closed server — which made
+      // waitForServerDown blind to an actual shutdown.
+      { timeout: timeoutMs, agent: false },
       (res: IncomingMessage) => {
         if (res.statusCode !== 200) {
           res.resume();
@@ -93,6 +97,9 @@ export function httpRequestJson(
         path: parsed.pathname + parsed.search,
         method,
         timeout: timeoutMs,
+        // See httpGetJson: never reuse pooled sockets against a server that
+        // may be shutting down.
+        agent: false,
         headers: {
           "Content-Type": "application/json",
           "Content-Length": String(data.length),
@@ -139,10 +146,15 @@ export async function waitForServerDown(
 export async function waitForReady(
   addr: string,
   totalTimeoutMs = 10_000,
+  // Optional fail-fast hook: return an error message to abort the wait
+  // immediately (e.g. the spawned server process already exited).
+  shouldAbort?: () => string | null,
 ): Promise<ProbeStatus | null> {
   const deadline = Date.now() + totalTimeoutMs;
   let lastErr: Error | null = null;
   while (Date.now() < deadline) {
+    const abortReason = shouldAbort?.();
+    if (abortReason) throw new Error(abortReason);
     try {
       const status = await httpGetJson<ProbeStatus>(
         `http://${addr}/_/api/status`,

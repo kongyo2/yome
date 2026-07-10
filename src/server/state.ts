@@ -86,6 +86,7 @@ export class State {
   private backupDirty = false;
   private backupTimer: NodeJS.Timeout | null = null;
   private backupClosed = false;
+  private backupInFlight: Promise<void> = Promise.resolve();
 
   private restartListeners = new Set<(file: string) => void>();
   private shutdownListeners = new Set<() => void>();
@@ -827,13 +828,17 @@ export class State {
     this.backupSaveFn = saveFn;
   }
 
-  // closeBackup flushes the final save and resolves once it has completed.
-  // Shutdown must await this: the process exits right after the HTTP server
-  // closes, and a fire-and-forget write could be lost — or land *after* a
-  // `--clear` client already deleted the backup file, resurrecting the
-  // session it just cleared.
+  // closeBackup flushes the final save and resolves once every pending
+  // write (including one started by the debounce timer just before close)
+  // has completed. Shutdown must await this: the process exits right after
+  // the HTTP server closes, and an unfinished write could be lost — or land
+  // *after* a `--clear` client already deleted the backup file, resurrecting
+  // the session it just cleared.
   async closeBackup(): Promise<void> {
-    if (this.backupClosed) return;
+    if (this.backupClosed) {
+      await this.backupInFlight;
+      return;
+    }
     this.backupClosed = true;
     if (this.backupTimer) {
       clearTimeout(this.backupTimer);
@@ -852,14 +857,22 @@ export class State {
     }, BACKUP_DEBOUNCE_MS);
   }
 
-  private async saveBackupNow(): Promise<void> {
-    if (!this.backupSaveFn || !this.backupDirty) return;
-    this.backupDirty = false;
-    const data = this.snapshotRestoreData();
-    try {
-      await this.backupSaveFn(data);
-    } catch (err) {
-      logger.warn("backup save failed", { error: String(err) });
+  // Serializes saves: each write chains onto the previous one, and the
+  // returned promise settles only when all writes so far have finished.
+  private saveBackupNow(): Promise<void> {
+    if (this.backupSaveFn && this.backupDirty) {
+      this.backupDirty = false;
+      const data = this.snapshotRestoreData();
+      const fn = this.backupSaveFn;
+      const write = async (): Promise<void> => {
+        try {
+          await fn(data);
+        } catch (err) {
+          logger.warn("backup save failed", { error: String(err) });
+        }
+      };
+      this.backupInFlight = this.backupInFlight.then(write);
     }
+    return this.backupInFlight;
   }
 }

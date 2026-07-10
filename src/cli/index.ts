@@ -1,4 +1,8 @@
-import { Command, Option as CommanderOption } from "commander";
+import {
+  Command,
+  InvalidArgumentError,
+  Option as CommanderOption,
+} from "commander";
 import { createInterface } from "node:readline";
 import pc from "picocolors";
 import open from "open";
@@ -87,7 +91,9 @@ async function promptYesNo(
       input: process.stdin,
       output: process.stderr,
     });
+    let answered = false;
     rl.question("", (ans) => {
+      answered = true;
       rl.close();
       const v = ans.trim().toLowerCase();
       if (v === "") {
@@ -95,6 +101,12 @@ async function promptYesNo(
         return;
       }
       resolve(v === "y" || v === "yes");
+    });
+    // stdin EOF (e.g. `yome --clear < /dev/null`) closes the interface
+    // without ever invoking the question callback; without this the promise
+    // never settles and the process exits 0 mid-command.
+    rl.on("close", () => {
+      if (!answered) resolve(false);
     });
   });
 }
@@ -177,12 +189,21 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       await backupRemove(flags.port);
     }
     if (wasServerRunning) {
-      spawnDetached({
+      const proc = spawnDetached({
         bind,
         host: bind,
         port: flags.port,
         dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+        // The detached child cannot answer the non-loopback bind prompt
+        // (its stdin is ignored); the user already confirmed this bind for
+        // the server we just shut down.
+        yes: true,
       });
+      await waitForReady(addr, 10_000, () =>
+        proc.exited()
+          ? `restarted server exited before becoming ready (see yome-${flags.port}.log under the state dir)`
+          : null,
+      );
       process.stderr.write(
         `yome: cleared session and restarted server on port ${flags.port}\n`,
       );
@@ -555,7 +576,13 @@ async function startBackground(
       noRestoreSession: !flags.restoreSession,
     });
     const pid = proc.pid;
-    const status = await waitForReady(addr, 10_000);
+    // Fail fast when the child dies during startup (bad file set, port in
+    // use, …) instead of polling out the full readiness timeout.
+    const status = await waitForReady(addr, 10_000, () =>
+      proc.exited()
+        ? `server process exited before becoming ready (see yome-${flags.port}.log under the state dir)`
+        : null,
+    );
     const deeplinks: DeeplinkEntry[] = [];
     if (status) {
       for (const g of status.groups ?? []) {
@@ -647,7 +674,15 @@ export async function runCli(): Promise<number> {
     .option(
       "-p, --port <number>",
       "Server port",
-      (v) => Number(v),
+      (v) => {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          throw new InvalidArgumentError(
+            "port must be an integer between 1 and 65535",
+          );
+        }
+        return n;
+      },
       DEFAULT_PORT,
     )
     .option(
@@ -705,10 +740,12 @@ export async function runCli(): Promise<number> {
     );
 
   program.exitOverride();
-  // Detect open/no-open explicitly from argv before commander folds them.
-  const openExplicit = process.argv.includes("--open");
-  const noOpenExplicit = process.argv.includes("--no-open");
-  if (openExplicit && noOpenExplicit) {
+  // The mutual-exclusion check must not look past a `--` terminator, where
+  // "--open" would be a positional filename, not a flag.
+  const ddIndex = process.argv.indexOf("--");
+  const flagArgv =
+    ddIndex === -1 ? process.argv : process.argv.slice(0, ddIndex);
+  if (flagArgv.includes("--open") && flagArgv.includes("--no-open")) {
     process.stderr.write("yome: --open and --no-open are mutually exclusive\n");
     return 1;
   }
@@ -725,6 +762,12 @@ export async function runCli(): Promise<number> {
   // every valid short-form syntax (-p N, -pN, --port=N, clustered -Rp7000,
   // even malformed values like -pfoo) without re-implementing the parser.
   const portExplicit = program.getOptionValueSource("port") === "cli";
+  // Same for --open/--no-open: they share the "open" key, so the source
+  // plus the folded value distinguishes them. Unlike a raw argv scan this
+  // respects `--` and option-value consumption (e.g. `--target --open`).
+  const openSource = program.getOptionValueSource("open");
+  const openExplicit = openSource === "cli" && opts["open"] === true;
+  const noOpenExplicit = openSource === "cli" && opts["open"] === false;
 
   const flags: Flags = {
     target: String(opts["target"] ?? DefaultGroup),
@@ -763,6 +806,10 @@ export async function runCli(): Promise<number> {
   try {
     return await runMain(args, flags);
   } catch (err) {
+    // Also land the failure in the per-port log file (when one is set up):
+    // detached children run with stdio ignored, so this is the only place a
+    // startup crash becomes diagnosable afterwards.
+    logger.error("fatal", { error: String(err) });
     process.stderr.write(`Error: ${(err as Error).message}\n`);
     return 1;
   }

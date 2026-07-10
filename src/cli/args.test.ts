@@ -43,6 +43,25 @@ describe("resolveArgs", () => {
     expect(patterns).toEqual([pat]);
   });
 
+  it("prefers an existing literal file over glob interpretation", async () => {
+    // "[draft] notes.md" contains glob metacharacters; as a character class
+    // it would also match "t notes.md". The literal file must win.
+    const literal = join(tmp, "[draft] notes.md");
+    const neighbor = join(tmp, "t notes.md");
+    writeFileSync(literal, "# Draft");
+    writeFileSync(neighbor, "# Neighbor");
+    const { files, patterns } = await resolveArgs([literal], false, false);
+    expect(files).toEqual([literal]);
+    expect(patterns).toEqual([]);
+  });
+
+  it("still expands glob-looking args that do not exist literally", async () => {
+    writeFileSync(join(tmp, "x1.md"), "");
+    writeFileSync(join(tmp, "x2.md"), "");
+    const { files } = await resolveArgs([join(tmp, "x?.md")], false, false);
+    expect(files.sort()).toEqual([join(tmp, "x1.md"), join(tmp, "x2.md")]);
+  });
+
   it("expands a directory to *.md", async () => {
     writeFileSync(join(tmp, "a.md"), "");
     writeFileSync(join(tmp, "b.md"), "");

@@ -61,6 +61,28 @@ describe("enableBackup", () => {
     state.closeAllSubscribers();
   });
 
+  it("waits for a debounce-triggered write that is still in flight", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    let settled = false;
+    let calls = 0;
+    state.enableBackup(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 80));
+      settled = true;
+    });
+    const path = join(tmp, "e.md");
+    writeFileSync(path, "# E");
+    state.addFile(path, "default");
+    // Let the debounce timer fire and start the async write...
+    await new Promise((r) => setTimeout(r, 1050));
+    expect(calls).toBe(1);
+    expect(settled).toBe(false);
+    // ...then closeBackup must still wait for that write to finish.
+    await state.closeBackup();
+    expect(settled).toBe(true);
+    state.closeAllSubscribers();
+  });
+
   it("does not save again after closeBackup", async () => {
     const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
     let saveCount = 0;

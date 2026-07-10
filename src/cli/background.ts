@@ -26,9 +26,20 @@ export interface SpawnOpts {
   dangerouslyAllowRemoteAccess?: boolean;
   bind: string;
   noRestoreSession?: boolean;
+  // Forward --yes so a detached child (whose stdin is ignored) can never
+  // stall or die on a confirmation prompt, e.g. the non-loopback bind
+  // warning after `--clear` respawns the server.
+  yes?: boolean;
 }
 
-export function spawnDetached(opts: SpawnOpts): { pid: number } {
+export interface SpawnedServer {
+  pid: number;
+  // Resolves true once the child has exited (never rejects). Callers can
+  // poll this to fail fast instead of waiting out a readiness timeout.
+  exited: () => boolean;
+}
+
+export function spawnDetached(opts: SpawnOpts): SpawnedServer {
   const { entry, useTsx } = findEntryPoint();
   const argv: string[] = [];
   if (useTsx) {
@@ -48,11 +59,18 @@ export function spawnDetached(opts: SpawnOpts): { pid: number } {
   if (opts.dangerouslyAllowRemoteAccess) {
     argv.push("--dangerously-allow-remote-access");
   }
+  if (opts.yes) {
+    argv.push("--yes");
+  }
   const child = spawn(process.execPath, argv, {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
   });
+  let hasExited = false;
+  child.once("exit", () => {
+    hasExited = true;
+  });
   child.unref();
-  return { pid: child.pid ?? 0 };
+  return { pid: child.pid ?? 0, exited: () => hasExited };
 }
