@@ -297,24 +297,34 @@ export async function doClose(
       );
       continue;
     }
-    const resp = await httpRequestJson(
-      "DELETE",
-      `http://${addr}/_/api/groups/${encodeURIComponent(groupName)}/files/${id}`,
-      undefined,
-      PROBE_TIMEOUT_DEFAULT,
-    );
-    if (resp.status === 404) {
-      errors.push(new Error(`file "${abs}" not found`));
-      continue;
-    }
-    if (resp.status !== 204) {
-      errors.push(
-        new Error(`unexpected response for "${abs}": ${resp.status}`),
+    // Per-file try/catch keeps the "collect all, return partial success"
+    // contract: a network error mid-batch must not discard prior results.
+    try {
+      const resp = await httpRequestJson(
+        "DELETE",
+        `http://${addr}/_/api/groups/${encodeURIComponent(groupName)}/files/${id}`,
+        undefined,
+        PROBE_TIMEOUT_DEFAULT,
       );
-      continue;
+      if (resp.status === 404) {
+        errors.push(new Error(`file "${abs}" not found`));
+        continue;
+      }
+      if (resp.status !== 204) {
+        errors.push(
+          new Error(`unexpected response for "${abs}": ${resp.status}`),
+        );
+        continue;
+      }
+      logger.info("file closed", { path: abs, id, group: groupName });
+      closed.push(abs);
+    } catch (err) {
+      errors.push(
+        new Error(`failed to close "${abs}": ${(err as Error).message}`, {
+          cause: err,
+        }),
+      );
     }
-    logger.info("file closed", { path: abs, id, group: groupName });
-    closed.push(abs);
   }
   return { closed, errors };
 }

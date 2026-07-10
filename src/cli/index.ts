@@ -185,9 +185,10 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       await doShutdown(addr);
       await waitForServerDown(addr);
     }
-    if (hasBackup) {
-      await backupRemove(flags.port);
-    }
+    // Remove unconditionally: the dying server's final backup flush may have
+    // just created a backup that did not exist when hasBackup was sampled
+    // (e.g. the session changed within the 1s debounce window).
+    await backupRemove(flags.port);
     if (wasServerRunning) {
       const proc = spawnDetached({
         bind,
