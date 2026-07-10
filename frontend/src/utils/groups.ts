@@ -1,5 +1,17 @@
 import type { Group } from "../hooks/useApi";
 
+// Display order for groups: alphabetical with "default" last. Shared by the
+// group dropdown, the sidebar "move to" menu, and the fallback-group picker.
+export function compareGroupNames(a: string, b: string): number {
+  if (a === "default") return 1;
+  if (b === "default") return -1;
+  return a.localeCompare(b);
+}
+
+export function sortGroupsForDisplay(groups: Group[]): Group[] {
+  return [...groups].sort((a, b) => compareGroupNames(a.name, b.name));
+}
+
 export function allFileIds(groups: Group[]): Set<string> {
   const ids = new Set<string>();
   for (const g of groups) {

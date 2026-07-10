@@ -23,7 +23,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   state.closeAllSubscribers();
-  state.closeBackup();
+  await state.closeBackup();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(tmp, { recursive: true, force: true });
@@ -528,6 +528,113 @@ describe("CSRF protection on control-plane endpoints", () => {
   });
 });
 
+describe("CSRF protection on state-mutating endpoints", () => {
+  const crossSite = { "sec-fetch-site": "cross-site" } as const;
+
+  it("rejects cross-site POST /_/api/groups/:group/files", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files", {
+      method: "POST",
+      headers: crossSite,
+      body: JSON.stringify({ path: join(tmp, "x.md") }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site POST /_/api/groups/:group/files/upload", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files/upload", {
+      method: "POST",
+      headers: crossSite,
+      body: JSON.stringify({ name: "a.md", content: "# A" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site DELETE /_/api/groups/:group/files/:id", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files/deadbeef", {
+      method: "DELETE",
+      headers: crossSite,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site PUT /_/api/groups/:group/files/:id/group", async () => {
+    const res = await fetch(
+      baseURL + "/_/api/groups/default/files/deadbeef/group",
+      {
+        method: "PUT",
+        headers: crossSite,
+        body: JSON.stringify({ group: "other" }),
+      },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site PUT /_/api/groups/:group/reorder", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/reorder", {
+      method: "PUT",
+      headers: crossSite,
+      body: JSON.stringify({ fileIds: [] }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site POST /_/api/groups/:group/files/open", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files/open", {
+      method: "POST",
+      headers: crossSite,
+      body: JSON.stringify({ fileId: "deadbeef", path: "other.md" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-site POST and DELETE /_/api/patterns", async () => {
+    const post = await fetch(baseURL + "/_/api/patterns", {
+      method: "POST",
+      headers: crossSite,
+      body: JSON.stringify({ pattern: join(tmp, "*.md"), group: "default" }),
+    });
+    expect(post.status).toBe(403);
+    const del = await fetch(baseURL + "/_/api/patterns", {
+      method: "DELETE",
+      headers: crossSite,
+      body: JSON.stringify({ pattern: join(tmp, "*.md"), group: "default" }),
+    });
+    expect(del.status).toBe(403);
+  });
+
+  it("rejects cross-origin POST with text/plain content type (no-preflight form)", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files", {
+      method: "POST",
+      headers: {
+        origin: "https://attacker.example",
+        "content-type": "text/plain",
+      },
+      body: JSON.stringify({ path: join(tmp, "x.md") }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("still accepts header-less requests (CLI client) on mutating endpoints", async () => {
+    await writeFile(join(tmp, "cli.md"), "# CLI\n");
+    const res = await postJson("/_/api/groups/default/files", {
+      path: join(tmp, "cli.md"),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("still accepts same-origin browser requests on mutating endpoints", async () => {
+    const res = await fetch(baseURL + "/_/api/groups/default/files/upload", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "ok.md", content: "# OK" }),
+    });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("Debounced file change", () => {
   it("collapses repeated scheduleFileChanged calls into one SSE event", async () => {
     const debouncedState = new State({
@@ -554,6 +661,6 @@ describe("Debounced file change", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(events.length).toBe(1);
     debouncedState.closeAllSubscribers();
-    debouncedState.closeBackup();
+    await debouncedState.closeBackup();
   });
 });

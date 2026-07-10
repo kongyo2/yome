@@ -24,7 +24,7 @@ describe("State", () => {
     expect(entry.title).toBe("Hello");
     expect(entry.id).toMatch(/^[0-9a-f]{8}$/);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("dedupes by absolute path within a group", async () => {
@@ -36,7 +36,7 @@ describe("State", () => {
     expect(a.id).toBe(b.id);
     expect(state.listGroups()[0]?.files).toHaveLength(1);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("rejects binary files", async () => {
@@ -45,7 +45,7 @@ describe("State", () => {
     await writeFile(path, Buffer.from([0xff, 0x00, 0x01, 0x02]));
     expect(() => state.addFile(path, "default")).toThrow(/binary/);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("removes file and group when empty", async () => {
@@ -57,7 +57,7 @@ describe("State", () => {
     expect(state.removeFile(entry.id, "g1")).toBe(true);
     expect(state.listGroups()).toHaveLength(0);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("reorders files within a group", async () => {
@@ -74,7 +74,7 @@ describe("State", () => {
       e1.id,
     ]);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("moves a file between groups", async () => {
@@ -89,10 +89,10 @@ describe("State", () => {
     ).toHaveLength(1);
     expect(state.listGroups().find((g) => g.name === "src")).toBeUndefined();
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
-  it("handles uploaded files", () => {
+  it("handles uploaded files", async () => {
     const state = new State({ fileChangeDebounceMs: 0 });
     const e1 = state.addUploadedFile("stdin.md", "hello world", "default");
     const e2 = state.addUploadedFile("stdin.md", "hello world", "default");
@@ -100,7 +100,7 @@ describe("State", () => {
     expect(e1.uploaded).toBe(true);
     expect(state.listGroups()[0]?.files).toHaveLength(1);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("adds and removes a glob pattern", async () => {
@@ -112,6 +112,21 @@ describe("State", () => {
     expect(state.patternsForGroup("default")).toEqual([join(tmp, "*.md")]);
     expect(state.removePattern(join(tmp, "*.md"), "default")).toBe(true);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
+  });
+
+  it("re-registering a pattern is idempotent and returns current matches", async () => {
+    const state = new State({ fileChangeDebounceMs: 0 });
+    await writeFile(join(tmp, "a.md"), "# A");
+    const first = await state.addPattern(join(tmp, "*.md"), "default");
+    expect(first).toHaveLength(1);
+    const again = await state.addPattern(join(tmp, "*.md"), "default");
+    expect(again).toHaveLength(1);
+    // Registered once, and files are not duplicated either.
+    expect(state.patternsForGroup("default")).toEqual([join(tmp, "*.md")]);
+    const group = state.listGroups().find((g) => g.name === "default");
+    expect(group?.files).toHaveLength(1);
+    state.closeAllSubscribers();
+    await state.closeBackup();
   });
 });

@@ -43,31 +43,36 @@ export async function resolveArgs(
 
   for (const arg of args) {
     const abs = toAbsolute(arg);
+    const isGlob = hasGlobChars(arg);
 
-    if (hasGlobChars(arg)) {
-      if (watchMode) {
-        patterns.push(abs);
-        continue;
+    if (isGlob && watchMode) {
+      patterns.push(abs);
+      continue;
+    }
+
+    // A literal path that exists always wins over glob interpretation, so a
+    // file literally named "[draft] notes.md" is not treated as a character
+    // class that also matches unrelated neighbors.
+    let st;
+    try {
+      st = statSync(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(`cannot stat path ${abs}: ${(err as Error).message}`, {
+          cause: err,
+        });
+      }
+      if (!isGlob) {
+        throw new Error(`file not found: ${abs}`, { cause: err });
       }
       const matches = await expandGlobAbsolute(abs);
       if (matches.length === 0) {
-        throw new Error(`no files matched ${arg}`);
+        throw new Error(`no files matched ${arg}`, { cause: err });
       }
       files.push(...matches);
       continue;
     }
 
-    let st;
-    try {
-      st = statSync(abs);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(`file not found: ${abs}`, { cause: err });
-      }
-      throw new Error(`cannot stat path ${abs}: ${(err as Error).message}`, {
-        cause: err,
-      });
-    }
     if (st.isDirectory()) {
       const pat = join(abs, markdownGlobFor(recursive));
       if (watchMode) {
@@ -84,10 +89,6 @@ export async function resolveArgs(
     files.push(abs);
   }
   return { files, patterns };
-}
-
-export interface ResolveUnwatchOpts {
-  registered: string[]; // already-fetched patterns for the group
 }
 
 export async function resolveUnwatchArgs(

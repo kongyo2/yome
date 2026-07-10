@@ -52,6 +52,9 @@ export function useSSE(callbacks: SSECallbacks) {
 
       es.onopen = () => {
         retryDelay = 1000;
+        // Events emitted while disconnected are gone (the server keeps no
+        // replay buffer), so resync the file list on every (re)connect.
+        callbacksRef.current.onUpdate();
       };
 
       es.onerror = () => {

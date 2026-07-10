@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { logger } from "../logfile/index.js";
 import { Name, Revision, Version } from "../version.js";
 import type { State } from "./state.js";
-import { writeRestoreFile } from "./state.js";
+import { writeRestoreFile } from "../common/restore.js";
 import { resolveGroupName, DefaultGroup } from "./group.js";
 import {
   findSearchMatches,
@@ -40,7 +40,7 @@ function textResponse(res: ServerResponse, status: number, body: string): void {
   res.end(body + "\n");
 }
 
-// Reject browser cross-site requests on control-plane endpoints. CLI clients
+// Reject browser cross-site requests on state-mutating endpoints. CLI clients
 // send neither Sec-Fetch-Site nor Origin, so they pass through unchanged.
 function isSameOriginRequest(req: IncomingMessage): boolean {
   const sfs = req.headers["sec-fetch-site"];
@@ -138,11 +138,22 @@ function stripContent(entry: FileEntry): Omit<FileEntry, "content"> {
 export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   const pid = opts.pid;
 
+  // Guard every state-mutating endpoint against browser cross-site requests
+  // (the SPA fetches same-origin; CLI clients send neither Sec-Fetch-Site
+  // nor Origin and pass through). Returns true when the request was
+  // rejected and the response has been written.
+  function rejectCrossSite(req: IncomingMessage, res: ServerResponse): boolean {
+    if (isSameOriginRequest(req)) return false;
+    textResponse(res, 403, "cross-site request rejected");
+    return true;
+  }
+
   async function handleAddFile(
     req: IncomingMessage,
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: group, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     let body: AddFileReq;
@@ -171,6 +182,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: group, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     let body: UploadFileReq;
@@ -196,10 +208,11 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   function handleRemoveFile(
-    _req: IncomingMessage,
+    req: IncomingMessage,
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: group, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     const id = params["id"] ?? "";
@@ -215,6 +228,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: sourceGroup, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     const id = params["id"] ?? "";
@@ -240,6 +254,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: group, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     let body: ReorderReq;
@@ -412,6 +427,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
     params: Record<string, string>,
   ) {
+    if (rejectCrossSite(req, res)) return;
     const { name: group, error } = resolveGroupName(params["group"]);
     if (error) return textResponse(res, 400, error.message);
     let body: OpenFileReq;
@@ -452,6 +468,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   async function handleAddPattern(req: IncomingMessage, res: ServerResponse) {
+    if (rejectCrossSite(req, res)) return;
     let body: PatternReq;
     try {
       body = await readJsonBody<PatternReq>(req, MAX_UPLOAD_BYTES);
@@ -475,6 +492,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     req: IncomingMessage,
     res: ServerResponse,
   ) {
+    if (rejectCrossSite(req, res)) return;
     let body: PatternReq;
     try {
       body = await readJsonBody<PatternReq>(req, MAX_UPLOAD_BYTES);
@@ -491,9 +509,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   async function handleRestart(req: IncomingMessage, res: ServerResponse) {
-    if (!isSameOriginRequest(req)) {
-      return textResponse(res, 403, "cross-site request rejected");
-    }
+    if (rejectCrossSite(req, res)) return;
     let restoreFile: string;
     try {
       restoreFile = await writeRestoreFile(state.snapshotRestoreData());
@@ -506,9 +522,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   function handleShutdown(req: IncomingMessage, res: ServerResponse) {
-    if (!isSameOriginRequest(req)) {
-      return textResponse(res, 403, "cross-site request rejected");
-    }
+    if (rejectCrossSite(req, res)) return;
     res.statusCode = 202;
     res.end();
     state.signalShutdown();
@@ -570,7 +584,6 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     req.on("aborted", close);
   }
 
-  // Register routes
   return {
     handleAddFile,
     handleUploadFile,

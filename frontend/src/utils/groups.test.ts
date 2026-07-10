@@ -5,6 +5,7 @@ import {
   groupToPath,
   buildFileUrl,
   parseFileIdFromSearch,
+  sortGroupsForDisplay,
 } from "./groups";
 import type { Group } from "../hooks/useApi";
 
@@ -137,5 +138,24 @@ describe("parseFileIdFromSearch", () => {
 
   it("returns null for empty value", () => {
     expect(parseFileIdFromSearch("?file=")).toBeNull();
+  });
+});
+
+describe("sortGroupsForDisplay", () => {
+  const mk = (name: string) => ({ name, files: [] });
+
+  it("sorts alphabetically with default last", () => {
+    const sorted = sortGroupsForDisplay([
+      mk("default"),
+      mk("zeta"),
+      mk("alpha"),
+    ]);
+    expect(sorted.map((g) => g.name)).toEqual(["alpha", "zeta", "default"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [mk("b"), mk("a")];
+    sortGroupsForDisplay(input);
+    expect(input.map((g) => g.name)).toEqual(["b", "a"]);
   });
 });

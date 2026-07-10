@@ -454,4 +454,189 @@ describe("yome CLI", () => {
     expect(r.status).toBe(0);
     expect(r.stderr).toMatch(/no saved session for port/);
   });
+
+  it("--clear prompt treats stdin EOF as a cancel instead of exiting mid-command", () => {
+    const targetPort = port + 203;
+    const backupDir = join(stateDir, "yome", "backup");
+    mkdirSync(backupDir, { recursive: true });
+    const backupFile = join(backupDir, `yome-${targetPort}.json`);
+    writeFileSync(backupFile, JSON.stringify({ groups: { default: [] } }));
+    // Empty piped stdin: the prompt hits EOF immediately.
+    const r = runYome(["--clear", "--port", String(targetPort)], {
+      env: { XDG_STATE_HOME: stateDir },
+      input: "",
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/canceled/);
+    expect(existsSync(backupFile)).toBe(true);
+  });
+
+  it(
+    "--clear --yes against a RUNNING server clears the backup and restarts it",
+    { timeout: 30_000 },
+    async () => {
+      const tmpFile = join(stateDir, "clearme.md");
+      writeFileSync(tmpFile, "# Clear Me\n");
+      const backupFile = join(stateDir, "yome", "backup", `yome-${port}.json`);
+
+      const child = spawn(
+        process.execPath,
+        [
+          ...launchArgs,
+          "--foreground",
+          "--port",
+          String(port),
+          "--bind",
+          "127.0.0.1",
+          "--no-open",
+          tmpFile,
+        ],
+        {
+          env: { ...process.env, XDG_STATE_HOME: stateDir },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      try {
+        // Wait for readiness, then for the debounced backup write.
+        let ready = false;
+        for (let i = 0; i < 100 && !ready; i++) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
+            if (res.ok) ready = true;
+          } catch {
+            // not yet
+          }
+          if (!ready) await wait(100);
+        }
+        expect(ready).toBe(true);
+        let backupSeen = false;
+        for (let i = 0; i < 50 && !backupSeen; i++) {
+          backupSeen = existsSync(backupFile);
+          if (!backupSeen) await wait(100);
+        }
+        expect(backupSeen).toBe(true);
+
+        // Pass the same --bind as the original server: the respawn uses the
+        // CLI's bind flag, and a bare "localhost" resolves to ::1 first on
+        // some CI hosts, which would put the new server on a different
+        // loopback than the 127.0.0.1 probes below.
+        const r = runYome(
+          ["--clear", "--yes", "--port", String(port), "--bind", "127.0.0.1"],
+          {
+            env: { XDG_STATE_HOME: stateDir },
+          },
+        );
+        expect(
+          r.status,
+          `--clear failed; stderr:\n${r.stderr}\nstdout:\n${r.stdout}`,
+        ).toBe(0);
+        expect(r.stderr).toMatch(/cleared session and restarted server/);
+        // The saved session must be gone and must not resurrect.
+        expect(existsSync(backupFile)).toBe(false);
+
+        // The respawned server is up and empty. Retry: undici may first
+        // burn stale pooled keep-alive sockets that belonged to the old
+        // server before opening a fresh connection.
+        let status: { groups: unknown[] } | null = null;
+        let lastFetchErr: unknown = null;
+        for (let i = 0; i < 25 && status === null; i++) {
+          try {
+            status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
+              (res) => res.json(),
+            )) as { groups: unknown[] };
+          } catch (err) {
+            lastFetchErr = err;
+            await wait(200);
+          }
+        }
+        expect(
+          status?.groups,
+          `respawned server unreachable; last fetch error: ${String(lastFetchErr)}`,
+        ).toEqual([]);
+        await wait(1500);
+        expect(existsSync(backupFile)).toBe(false);
+      } finally {
+        child.kill("SIGINT");
+        // The original server may already have exited via --clear's shutdown.
+        await Promise.race([
+          new Promise<void>((resolve) => child.once("exit", () => resolve())),
+          wait(2000),
+        ]);
+        // Stop the respawned detached server.
+        runYome(["--port", String(port), "--shutdown"], {
+          env: { XDG_STATE_HOME: stateDir },
+        });
+      }
+    },
+  );
+
+  it(
+    "--clear removes a backup created by the dying server's final flush",
+    { timeout: 30_000 },
+    async () => {
+      // Scenario: the session changed within the 1s backup debounce, so no
+      // backup exists when --clear samples the filesystem — but the awaited
+      // shutdown flush writes one. --clear must still leave no backup behind.
+      const tmpFile = join(stateDir, "flush.md");
+      writeFileSync(tmpFile, "# Flush\n");
+      const backupFile = join(stateDir, "yome", "backup", `yome-${port}.json`);
+
+      const child = spawn(
+        process.execPath,
+        [
+          ...launchArgs,
+          "--foreground",
+          "--port",
+          String(port),
+          "--bind",
+          "127.0.0.1",
+          "--no-open",
+          tmpFile,
+        ],
+        {
+          env: { ...process.env, XDG_STATE_HOME: stateDir },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      try {
+        let ready = false;
+        for (let i = 0; i < 100 && !ready; i++) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${port}/_/api/status`);
+            if (res.ok) ready = true;
+          } catch {
+            // not yet
+          }
+          if (!ready) await wait(100);
+        }
+        expect(ready).toBe(true);
+
+        // Clear right away — often before the debounced backup write fires.
+        const r = runYome(
+          ["--clear", "--yes", "--port", String(port), "--bind", "127.0.0.1"],
+          {
+            env: { XDG_STATE_HOME: stateDir },
+          },
+        );
+        expect(
+          r.status,
+          `--clear failed; stderr:\n${r.stderr}\nstdout:\n${r.stdout}`,
+        ).toBe(0);
+        // Regardless of which side won the debounce race, no backup may
+        // survive the clear.
+        expect(existsSync(backupFile)).toBe(false);
+        await wait(1500);
+        expect(existsSync(backupFile)).toBe(false);
+      } finally {
+        child.kill("SIGINT");
+        await Promise.race([
+          new Promise<void>((resolve) => child.once("exit", () => resolve())),
+          wait(2000),
+        ]);
+        runYome(["--port", String(port), "--shutdown"], {
+          env: { XDG_STATE_HOME: stateDir },
+        });
+      }
+    },
+  );
 });

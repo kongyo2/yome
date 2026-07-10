@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Group } from "../hooks/useApi";
+import { sortGroupsForDisplay } from "../utils/groups";
 
 interface GroupDropdownProps {
   groups: Group[];
@@ -103,47 +104,41 @@ export function GroupDropdown({
             className="py-1 max-h-[min(24rem,calc(100vh-4rem))] overflow-y-auto"
             onScroll={updateScrollIndicators}
           >
-            {[...groups]
-              .sort((a, b) => {
-                if (a.name === "default") return 1;
-                if (b.name === "default") return -1;
-                return a.name.localeCompare(b.name);
-              })
-              .map((g) => (
-                <button
-                  key={g.name}
-                  className={`flex items-center gap-2 w-full px-3 py-1.5 border-none cursor-pointer text-left text-xs transition-colors duration-150 ${
-                    g.name === activeGroup
-                      ? "bg-gh-bg-active text-gh-text font-semibold"
-                      : "bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover"
-                  }`}
-                  onClick={() => {
-                    onGroupChange(g.name);
-                    setOpen(false);
-                  }}
-                >
-                  {g.name === activeGroup ? (
-                    <svg
-                      className="size-3.5 shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m4.5 12.75 6 6 9-13.5"
-                      />
-                    </svg>
-                  ) : (
-                    <span className="inline-block size-3.5 shrink-0" />
-                  )}
-                  <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-                    {g.name === "default" ? "(default)" : g.name}
-                  </span>
-                </button>
-              ))}
+            {sortGroupsForDisplay(groups).map((g) => (
+              <button
+                key={g.name}
+                className={`flex items-center gap-2 w-full px-3 py-1.5 border-none cursor-pointer text-left text-xs transition-colors duration-150 ${
+                  g.name === activeGroup
+                    ? "bg-gh-bg-active text-gh-text font-semibold"
+                    : "bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover"
+                }`}
+                onClick={() => {
+                  onGroupChange(g.name);
+                  setOpen(false);
+                }}
+              >
+                {g.name === activeGroup ? (
+                  <svg
+                    className="size-3.5 shrink-0"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m4.5 12.75 6 6 9-13.5"
+                    />
+                  </svg>
+                ) : (
+                  <span className="inline-block size-3.5 shrink-0" />
+                )}
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap">
+                  {g.name === "default" ? "(default)" : g.name}
+                </span>
+              </button>
+            ))}
           </div>
           {canScrollDown && (
             <div className="flex justify-center py-0.5 text-gh-text-secondary border-t border-gh-border">

@@ -128,3 +128,34 @@ describe("expandGlob depth handling", () => {
     }
   });
 });
+
+describe("expandGlob symlink handling", () => {
+  it("includes symlinks to files but excludes symlinks to directories", async () => {
+    const { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { expandGlob } = await import("./glob.js");
+    const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
+    try {
+      writeFileSync(join(tmp, "real.md"), "");
+      mkdirSync(join(tmp, "adir.md"));
+      try {
+        symlinkSync(join(tmp, "real.md"), join(tmp, "filelink.md"));
+        symlinkSync(join(tmp, "adir.md"), join(tmp, "dirlink.md"));
+        symlinkSync(join(tmp, "missing.md"), join(tmp, "broken.md"));
+      } catch {
+        // Symlinks may be unavailable (e.g. Windows without privileges);
+        // nothing to assert in that case.
+        return;
+      }
+      const results = await expandGlob(tmp, "*.md", { filesOnly: true });
+      expect(results.sort()).toEqual([
+        join(tmp, "filelink.md"),
+        join(tmp, "real.md"),
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

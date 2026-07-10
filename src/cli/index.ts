@@ -1,28 +1,28 @@
-import { Command, Option as CommanderOption } from "commander";
-import { readdir } from "node:fs/promises";
+import {
+  Command,
+  InvalidArgumentError,
+  Option as CommanderOption,
+} from "commander";
 import { createInterface } from "node:readline";
 import pc from "picocolors";
 import open from "open";
 import {
-  backupDir,
   exists as backupExists,
   load as backupLoad,
   remove as backupRemove,
 } from "../backup/index.js";
-import { logger, setup as setupLogfile, logDir } from "../logfile/index.js";
+import { logger, setup as setupLogfile } from "../logfile/index.js";
 import { DefaultGroup, resolveGroupName } from "../server/group.js";
 import { Version, Revision, Name } from "../version.js";
 import {
   PROBE_TIMEOUT_DEFAULT,
   PROBE_TIMEOUT_FAST,
-  httpGetJson,
-  httpRequestJson,
   probeServer,
   waitForReady,
   waitForServerDown,
 } from "./probe.js";
 import { isStdinRedirected, readStdin } from "./stdin.js";
-import { resolveArgs, resolveUnwatchArgs, toAbsolute } from "./args.js";
+import { resolveArgs, resolveUnwatchArgs } from "./args.js";
 import {
   buildDeeplink,
   deeplinkDisplayNames,
@@ -41,6 +41,19 @@ import {
   mapFromRecord,
   mergeGroups,
 } from "./helpers.js";
+import {
+  doClose,
+  doRestart,
+  doShutdown,
+  doStatus,
+  doUnwatch,
+  fetchRegisteredPatterns,
+  postFiles,
+  postPatterns,
+  postUploadedFile,
+  shutdownOrRestartAll,
+  writeJson,
+} from "./client.js";
 import type { RestoreData } from "../backup/index.js";
 
 const DEFAULT_PORT = 6275;
@@ -78,7 +91,9 @@ async function promptYesNo(
       input: process.stdin,
       output: process.stderr,
     });
+    let answered = false;
     rl.question("", (ans) => {
+      answered = true;
       rl.close();
       const v = ans.trim().toLowerCase();
       if (v === "") {
@@ -87,11 +102,13 @@ async function promptYesNo(
       }
       resolve(v === "y" || v === "yes");
     });
+    // stdin EOF (e.g. `yome --clear < /dev/null`) closes the interface
+    // without ever invoking the question callback; without this the promise
+    // never settles and the process exits 0 mid-command.
+    rl.on("close", () => {
+      if (!answered) resolve(false);
+    });
   });
-}
-
-function writeJson(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
 }
 
 function emitServeOutput(
@@ -121,426 +138,6 @@ function emitServeOutput(
   for (let i = 0; i < deeplinks.length; i++) {
     process.stdout.write(`  ${deeplinks[i]?.url ?? ""}  ${names[i] ?? ""}\n`);
   }
-}
-
-async function listPortsFromDir(
-  dir: string,
-  prefix: string,
-  suffix: string,
-): Promise<number[]> {
-  let entries: import("node:fs").Dirent[] = [];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const ports: number[] = [];
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const name = e.name;
-    if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
-    const raw = name.substring(prefix.length, name.length - suffix.length);
-    const p = Number(raw);
-    if (!Number.isFinite(p) || !Number.isInteger(p) || String(p) !== raw)
-      continue;
-    ports.push(p);
-  }
-  return ports;
-}
-
-interface DiscoveredPorts {
-  all: number[];
-  // Ports that have a backup JSON but no log file. These have no observable
-  // history in `--status` otherwise — surfacing them here is what makes
-  // long-lived orphan backups discoverable.
-  backupOnly: Set<number>;
-}
-
-async function discoverPortsDetailed(): Promise<DiscoveredPorts> {
-  const [logPorts, backupPorts] = await Promise.all([
-    listPortsFromDir(logDir(), "yome-", ".log"),
-    listPortsFromDir(backupDir(), "yome-", ".json"),
-  ]);
-  const logSet = new Set(logPorts);
-  const backupOnly = new Set<number>();
-  for (const p of backupPorts) {
-    if (!logSet.has(p)) backupOnly.add(p);
-  }
-  const all = [...new Set([...logPorts, ...backupPorts])].sort((a, b) => a - b);
-  return { all, backupOnly };
-}
-
-async function discoverPorts(): Promise<number[]> {
-  return (await discoverPortsDetailed()).all;
-}
-
-interface StatusResponse {
-  version: string;
-  revision: string;
-  pid: number;
-  groups: Array<{
-    name: string;
-    files: Array<{ name: string; id: string; path: string }>;
-    patterns?: string[];
-  }>;
-}
-
-async function doStatus(jsonMode: boolean): Promise<number> {
-  const { all: ports, backupOnly } = await discoverPortsDetailed();
-  if (ports.length === 0) {
-    if (jsonMode) writeJson([]);
-    else process.stderr.write("yome: no yome server found\n");
-    return 0;
-  }
-  let found = false;
-  const jsonEntries: Array<Record<string, unknown>> = [];
-  for (let i = 0; i < ports.length; i++) {
-    const p = ports[i]!;
-    const addr = `localhost:${p}`;
-    let status: StatusResponse | null = null;
-    try {
-      status = await httpGetJson<StatusResponse>(
-        `http://${addr}/_/api/status`,
-        2000,
-      );
-    } catch {
-      found = true;
-      const orphanBackup = backupOnly.has(p);
-      if (jsonMode) {
-        const entry: Record<string, unknown> = {
-          url: `http://${addr}`,
-          status: "stopped",
-        };
-        if (orphanBackup) entry["orphanBackup"] = true;
-        jsonEntries.push(entry);
-      } else {
-        const note = orphanBackup ? " (saved session backup only)" : "";
-        process.stdout.write(`http://${addr} (stopped)${note}\n`);
-        if (i < ports.length - 1) process.stdout.write("\n");
-      }
-      continue;
-    }
-    found = true;
-    if (jsonMode) {
-      const groups = (status.groups ?? []).map((g) => ({
-        name: g.name,
-        files: g.files.length,
-        patterns: g.patterns ?? [],
-      }));
-      const entry: Record<string, unknown> = {
-        url: `http://${addr}`,
-        status: "running",
-        pid: status.pid,
-        version: status.version,
-        revision: status.revision,
-        groups,
-      };
-      jsonEntries.push(entry);
-    } else {
-      let ver = status.version;
-      if (status.revision !== "" && status.revision !== "HEAD")
-        ver += " " + status.revision;
-      process.stdout.write(`http://${addr} (pid ${status.pid}, ${ver})\n`);
-      for (const g of status.groups ?? []) {
-        process.stdout.write(`  ${g.name}: ${g.files.length} file(s)\n`);
-        if (g.patterns && g.patterns.length > 0) {
-          process.stdout.write(`    watching: ${g.patterns.join(", ")}\n`);
-        }
-      }
-      if (i < ports.length - 1) process.stdout.write("\n");
-    }
-  }
-  if (jsonMode) {
-    writeJson(jsonEntries);
-  } else if (!found) {
-    process.stderr.write("yome: no yome server found\n");
-  }
-  return 0;
-}
-
-async function doShutdown(addr: string): Promise<void> {
-  await probeServer(addr);
-  const resp = await httpRequestJson(
-    "POST",
-    `http://${addr}/_/api/shutdown`,
-    {},
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  if (resp.status !== 202) {
-    throw new Error(`unexpected response from server: ${resp.status}`);
-  }
-  logger.info("shutdown request sent", { addr });
-  process.stderr.write(`yome: shutdown request sent to http://${addr}\n`);
-}
-
-async function doRestart(addr: string): Promise<void> {
-  await probeServer(addr);
-  const resp = await httpRequestJson(
-    "POST",
-    `http://${addr}/_/api/restart`,
-    {},
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  if (resp.status !== 202) {
-    throw new Error(`unexpected response from server: ${resp.status}`);
-  }
-  logger.info("restart request sent", { addr });
-  process.stderr.write(`yome: restart request sent to http://${addr}\n`);
-}
-
-async function shutdownOrRestartAll(
-  action: "shutdown" | "restart",
-): Promise<number> {
-  const ports = await discoverPorts();
-  if (ports.length === 0) {
-    process.stderr.write("yome: no yome server found\n");
-    return 0;
-  }
-  let actedCount = 0;
-  const errors: Array<{ port: number; message: string }> = [];
-  for (const port of ports) {
-    const addr = `localhost:${port}`;
-    try {
-      // Use the full probe timeout (not the fast one) so a temporarily
-      // slow-but-running yome instance is not silently skipped.
-      await probeServer(addr, PROBE_TIMEOUT_DEFAULT);
-    } catch {
-      continue;
-    }
-    try {
-      if (action === "shutdown") {
-        await doShutdown(addr);
-      } else {
-        await doRestart(addr);
-      }
-      actedCount++;
-    } catch (err) {
-      errors.push({ port, message: (err as Error).message });
-    }
-  }
-  for (const e of errors) {
-    process.stderr.write(
-      `yome: failed to ${action} port ${e.port}: ${e.message}\n`,
-    );
-  }
-  if (actedCount === 0 && errors.length === 0) {
-    process.stderr.write("yome: no running yome server found\n");
-  }
-  return errors.length > 0 ? 1 : 0;
-}
-
-async function doUnwatch(
-  addr: string,
-  patterns: string[],
-  groupName: string,
-): Promise<void> {
-  await probeServer(addr);
-  for (const pat of patterns) {
-    const resp = await httpRequestJson(
-      "DELETE",
-      `http://${addr}/_/api/patterns`,
-      { pattern: pat, group: groupName },
-      PROBE_TIMEOUT_DEFAULT,
-    );
-    if (resp.status === 404) {
-      throw new Error(
-        `watch pattern "${pat}" not found in group "${groupName}" (use --status to see registered patterns)`,
-      );
-    }
-    if (resp.status !== 204) {
-      throw new Error(`unexpected response from server: ${resp.status}`);
-    }
-    logger.info("pattern removed", { pattern: pat, group: groupName });
-    process.stderr.write(`yome: unwatched ${pat}\n`);
-  }
-}
-
-async function fetchRegisteredPatterns(
-  addr: string,
-  groupName: string,
-): Promise<string[]> {
-  const status = await httpGetJson<StatusResponse>(
-    `http://${addr}/_/api/status`,
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  for (const g of status.groups) {
-    if (g.name === groupName) return g.patterns ?? [];
-  }
-  throw new Error(
-    `group "${groupName}" not found (use --status to see registered groups)`,
-  );
-}
-
-async function doClose(
-  addr: string,
-  paths: string[],
-  groupName: string,
-): Promise<{ closed: string[]; errors: Error[] }> {
-  await probeServer(addr);
-  const status = await httpGetJson<StatusResponse>(
-    `http://${addr}/_/api/status`,
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  const pathToID = new Map<string, string>();
-  for (const g of status.groups) {
-    if (g.name === groupName) {
-      for (const f of g.files) pathToID.set(f.path, f.id);
-      break;
-    }
-  }
-  const closed: string[] = [];
-  const errors: Error[] = [];
-  for (const p of paths) {
-    const abs = toAbsolute(p);
-    const id = pathToID.get(abs);
-    if (!id) {
-      errors.push(
-        new Error(
-          `file "${abs}" not found in group "${groupName}" (use --status to see files)`,
-        ),
-      );
-      continue;
-    }
-    const resp = await httpRequestJson(
-      "DELETE",
-      `http://${addr}/_/api/groups/${encodeURIComponent(groupName)}/files/${id}`,
-      undefined,
-      PROBE_TIMEOUT_DEFAULT,
-    );
-    if (resp.status === 404) {
-      errors.push(new Error(`file "${abs}" not found`));
-      continue;
-    }
-    if (resp.status !== 204) {
-      errors.push(
-        new Error(`unexpected response for "${abs}": ${resp.status}`),
-      );
-      continue;
-    }
-    logger.info("file closed", { path: abs, id, group: groupName });
-    closed.push(abs);
-  }
-  return { closed, errors };
-}
-
-interface PostFileError {
-  target: string;
-  message: string;
-}
-
-interface PostFileResult {
-  entries: DeeplinkEntry[];
-  errors: PostFileError[];
-}
-
-async function postFiles(
-  addr: string,
-  group: string,
-  files: string[],
-): Promise<PostFileResult> {
-  const entries: DeeplinkEntry[] = [];
-  const errors: PostFileError[] = [];
-  for (const f of files) {
-    try {
-      const resp = await httpRequestJson(
-        "POST",
-        `http://${addr}/_/api/groups/${encodeURIComponent(group)}/files`,
-        { path: f },
-        PROBE_TIMEOUT_DEFAULT,
-      );
-      if (resp.status !== 200) {
-        const detail = resp.body.trim();
-        const message = detail
-          ? `failed to add "${f}": ${detail}`
-          : `failed to add "${f}": HTTP ${resp.status}`;
-        logger.warn("failed to add file", { path: f, status: resp.status });
-        errors.push({ target: f, message });
-        continue;
-      }
-      const entry = JSON.parse(resp.body) as { id: string; path: string };
-      entries.push({
-        url: buildDeeplink(addr, group, entry.id, DefaultGroup),
-        path: entry.path,
-      });
-    } catch (err) {
-      const message = `failed to add "${f}": ${(err as Error).message}`;
-      logger.warn("failed to post file", { path: f, error: String(err) });
-      errors.push({ target: f, message });
-    }
-  }
-  return { entries, errors };
-}
-
-async function postPatterns(
-  addr: string,
-  group: string,
-  patterns: string[],
-): Promise<PostFileResult> {
-  const entries: DeeplinkEntry[] = [];
-  const errors: PostFileError[] = [];
-  for (const pat of patterns) {
-    try {
-      const resp = await httpRequestJson(
-        "POST",
-        `http://${addr}/_/api/patterns`,
-        { pattern: pat, group },
-        PROBE_TIMEOUT_DEFAULT,
-      );
-      if (resp.status !== 200) {
-        const detail = resp.body.trim();
-        const message = detail
-          ? `failed to add pattern "${pat}": ${detail}`
-          : `failed to add pattern "${pat}": HTTP ${resp.status}`;
-        logger.warn("failed to add pattern", {
-          pattern: pat,
-          status: resp.status,
-        });
-        errors.push({ target: pat, message });
-        continue;
-      }
-      const data = JSON.parse(resp.body) as {
-        matched: number;
-        files?: Array<{ id: string; path: string }>;
-      };
-      for (const f of data.files ?? []) {
-        entries.push({
-          url: buildDeeplink(addr, group, f.id, DefaultGroup),
-          path: f.path,
-        });
-      }
-    } catch (err) {
-      const message = `failed to add pattern "${pat}": ${(err as Error).message}`;
-      logger.warn("failed to post pattern", {
-        pattern: pat,
-        error: String(err),
-      });
-      errors.push({ target: pat, message });
-    }
-  }
-  return { entries, errors };
-}
-
-async function postUploadedFile(
-  addr: string,
-  group: string,
-  name: string,
-  content: string,
-): Promise<DeeplinkEntry> {
-  const resp = await httpRequestJson(
-    "POST",
-    `http://${addr}/_/api/groups/${encodeURIComponent(group)}/files/upload`,
-    { name, content },
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  if (resp.status !== 200) {
-    throw new Error(`upload failed: ${resp.status}: ${resp.body.trim()}`);
-  }
-  const entry = JSON.parse(resp.body) as { id: string; name: string };
-  return {
-    url: buildDeeplink(addr, group, entry.id, DefaultGroup),
-    path: "",
-    name: entry.name,
-  };
 }
 
 async function runMain(args: string[], flags: Flags): Promise<number> {
@@ -588,16 +185,26 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       await doShutdown(addr);
       await waitForServerDown(addr);
     }
-    if (hasBackup) {
-      await backupRemove(flags.port);
-    }
+    // Remove unconditionally: the dying server's final backup flush may have
+    // just created a backup that did not exist when hasBackup was sampled
+    // (e.g. the session changed within the 1s debounce window).
+    await backupRemove(flags.port);
     if (wasServerRunning) {
-      spawnDetached({
+      const proc = spawnDetached({
         bind,
         host: bind,
         port: flags.port,
         dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+        // The detached child cannot answer the non-loopback bind prompt
+        // (its stdin is ignored); the user already confirmed this bind for
+        // the server we just shut down.
+        yes: true,
       });
+      await waitForReady(addr, 10_000, () =>
+        proc.exited()
+          ? `restarted server exited before becoming ready (see yome-${flags.port}.log under the state dir)`
+          : null,
+      );
       process.stderr.write(
         `yome: cleared session and restarted server on port ${flags.port}\n`,
       );
@@ -776,13 +383,11 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
         throw stdinUploadErr;
       }
 
-      const succeededFiles = pf.entries.length;
-      const succeededPatterns = pp.entries.length > 0 ? patterns.length : 0;
-      let added = pf.entries.length + succeededPatterns;
+      let added = pf.succeeded + pp.succeeded;
       if (stdinData && !stdinUploadErr) added++;
       logger.info("added to existing server", {
-        files: succeededFiles,
-        patterns: patterns.length,
+        files: pf.succeeded,
+        patterns: pp.succeeded,
         stdin: stdinData != null,
         addr,
       });
@@ -972,7 +577,13 @@ async function startBackground(
       noRestoreSession: !flags.restoreSession,
     });
     const pid = proc.pid;
-    const status = await waitForReady(addr, 10_000);
+    // Fail fast when the child dies during startup (bad file set, port in
+    // use, …) instead of polling out the full readiness timeout.
+    const status = await waitForReady(addr, 10_000, () =>
+      proc.exited()
+        ? `server process exited before becoming ready (see yome-${flags.port}.log under the state dir)`
+        : null,
+    );
     const deeplinks: DeeplinkEntry[] = [];
     if (status) {
       for (const g of status.groups ?? []) {
@@ -1064,7 +675,15 @@ export async function runCli(): Promise<number> {
     .option(
       "-p, --port <number>",
       "Server port",
-      (v) => Number(v),
+      (v) => {
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          throw new InvalidArgumentError(
+            "port must be an integer between 1 and 65535",
+          );
+        }
+        return n;
+      },
       DEFAULT_PORT,
     )
     .option(
@@ -1122,10 +741,12 @@ export async function runCli(): Promise<number> {
     );
 
   program.exitOverride();
-  // Detect open/no-open explicitly from argv before commander folds them.
-  const openExplicit = process.argv.includes("--open");
-  const noOpenExplicit = process.argv.includes("--no-open");
-  if (openExplicit && noOpenExplicit) {
+  // The mutual-exclusion check must not look past a `--` terminator, where
+  // "--open" would be a positional filename, not a flag.
+  const ddIndex = process.argv.indexOf("--");
+  const flagArgv =
+    ddIndex === -1 ? process.argv : process.argv.slice(0, ddIndex);
+  if (flagArgv.includes("--open") && flagArgv.includes("--no-open")) {
     process.stderr.write("yome: --open and --no-open are mutually exclusive\n");
     return 1;
   }
@@ -1142,6 +763,12 @@ export async function runCli(): Promise<number> {
   // every valid short-form syntax (-p N, -pN, --port=N, clustered -Rp7000,
   // even malformed values like -pfoo) without re-implementing the parser.
   const portExplicit = program.getOptionValueSource("port") === "cli";
+  // Same for --open/--no-open: they share the "open" key, so the source
+  // plus the folded value distinguishes them. Unlike a raw argv scan this
+  // respects `--` and option-value consumption (e.g. `--target --open`).
+  const openSource = program.getOptionValueSource("open");
+  const openExplicit = openSource === "cli" && opts["open"] === true;
+  const noOpenExplicit = openSource === "cli" && opts["open"] === false;
 
   const flags: Flags = {
     target: String(opts["target"] ?? DefaultGroup),
@@ -1180,6 +807,10 @@ export async function runCli(): Promise<number> {
   try {
     return await runMain(args, flags);
   } catch (err) {
+    // Also land the failure in the per-port log file (when one is set up):
+    // detached children run with stdio ignored, so this is the only place a
+    // startup crash becomes diagnosable afterwards.
+    logger.error("fatal", { error: String(err) });
     process.stderr.write(`Error: ${(err as Error).message}\n`);
     return 1;
   }

@@ -96,6 +96,11 @@ yome SKILL.md --no-restore-session
 
 `yome --help` で全オプションが確認できます。
 
+## セキュリティ
+
+- サーバーは既定で `localhost` にのみバインドされます。非ループバックアドレスへのバインドは認証なしでファイルを公開するため、確認プロンプトと `--dangerously-allow-remote-access` による明示的な同意が必要です。
+- 状態を変更するすべての HTTP API (ファイル追加 / 削除 / 移動 / アップロード / watch パターン / shutdown / restart) は、ブラウザからのクロスサイトリクエストを `Sec-Fetch-Site` / `Origin` ヘッダーで検証して拒否します。
+
 ## ライセンス
 
 MIT License。

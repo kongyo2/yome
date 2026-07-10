@@ -21,7 +21,8 @@ export function stripMdxSyntax(content: string): string {
   let strippingDepth = 0;
 
   for (const line of lines) {
-    const fenceMatch = /^(`{3,}|~{3,})/.exec(line);
+    // CommonMark allows up to 3 leading spaces before a fence delimiter.
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (fenceMatch) {
       const char = fenceMatch[1][0];
       const len = fenceMatch[1].length;

@@ -1,20 +1,11 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { stateHome } from "../xdg/index.js";
+import type { RestoreData } from "../common/restore.js";
 
-export interface UploadedFileData {
-  name: string;
-  content: string;
-  group: string;
-}
-
-export interface RestoreData {
-  groups: Record<string, string[]>;
-  patterns?: Record<string, string[]>;
-  uploadedFiles?: UploadedFileData[];
-}
+export type { RestoreData, UploadedFileData } from "../common/restore.js";
 
 export function backupDir(): string {
   return join(stateHome(), "yome", "backup");
@@ -65,21 +56,5 @@ export function exists(port: number): boolean {
 }
 
 export async function remove(port: number): Promise<void> {
-  const p = backupPath(port);
-  try {
-    await rm(p, { force: false });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-  }
-}
-
-export async function statBackup(port: number): Promise<{ exists: boolean }> {
-  try {
-    await stat(backupPath(port));
-    return { exists: true };
-  } catch {
-    return { exists: false };
-  }
+  await rm(backupPath(port), { force: true });
 }

@@ -161,6 +161,19 @@ function collectSearchHitMarkers(
   return [...markers.values()].sort((a, b) => a.top - b.top);
 }
 
+// Best-effort removal of inline markdown markup so a raw heading string can
+// be compared against rendered DOM textContent (e.g. "Install `yome`" vs
+// "Install yome").
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links and images
+    .replace(/`([^`]*)`/g, "$1") // inline code
+    .replace(/(\*\*|__)(.*?)\1/g, "$2") // bold
+    .replace(/(\*|_)(.*?)\1/g, "$2") // emphasis
+    .replace(/~~(.*?)~~/g, "$1") // strikethrough
+    .trim();
+}
+
 function getMermaidTheme(): "dark" | "default" {
   return document.documentElement.getAttribute("data-theme") === "dark"
     ? "dark"
@@ -605,10 +618,20 @@ export function MarkdownViewer({
     [],
   );
   const articleRef = useRef<HTMLElement>(null);
-  const [prevFetchKey, setPrevFetchKey] = useState({ fileId, revision });
+  const [prevFetchKey, setPrevFetchKey] = useState({
+    activeGroup,
+    fileId,
+    revision,
+  });
 
-  if (fileId !== prevFetchKey.fileId || revision !== prevFetchKey.revision) {
-    setPrevFetchKey({ fileId, revision });
+  // Any change to the fetch inputs (group, file, revision) re-enters the
+  // loading state so stale content is never shown for the new key.
+  if (
+    activeGroup !== prevFetchKey.activeGroup ||
+    fileId !== prevFetchKey.fileId ||
+    revision !== prevFetchKey.revision
+  ) {
+    setPrevFetchKey({ activeGroup, fileId, revision });
     setLoading(true);
   }
 
@@ -646,10 +669,12 @@ export function MarkdownViewer({
     [activeGroup, fileId, onFileOpened],
   );
 
+  // react-markdown passes the hast `node` to custom renderers; it must be
+  // destructured away so it is not spread onto DOM elements.
   const components: Components = useMemo(
     () => ({
       pre: ({ children }) => <>{children}</>,
-      code: ({ className, children, ...props }) => {
+      code: ({ node: _node, className, children, ...props }) => {
         const language = extractLanguage(className);
         const code = String(children).replace(/\n$/, "");
         const isBlock = String(children).endsWith("\n");
@@ -668,7 +693,7 @@ export function MarkdownViewer({
           </code>
         );
       },
-      img: ({ src, alt, ...props }) => {
+      img: ({ node: _node, src, alt, ...props }) => {
         const resolvedSrc = resolveImageSrc(src, activeGroup, fileId);
         if (onZoom && resolvedSrc) {
           return (
@@ -696,7 +721,7 @@ export function MarkdownViewer({
           />
         );
       },
-      a: ({ href, children, ...props }) => {
+      a: ({ node: _node, href, children, ...props }) => {
         const resolved = resolveLink(href, activeGroup, fileId);
         switch (resolved.type) {
           case "external":
@@ -761,10 +786,13 @@ export function MarkdownViewer({
         }
       },
     }),
-    [fileId, handleLinkClick, onZoom],
+    [activeGroup, fileId, handleLinkClick, onZoom],
   );
 
-  const isMarkdown = isMarkdownFile(fileName);
+  // An empty fileName means the entry is not in the groups list yet (e.g. a
+  // file just opened via a relative link, before the SSE refetch lands).
+  // Default to markdown rendering rather than flashing raw text.
+  const isMarkdown = fileName === "" || isMarkdownFile(fileName);
   const codeLanguage = isMarkdown ? null : detectLanguage(fileName);
 
   const parsed = useMemo(
@@ -852,16 +880,21 @@ export function MarkdownViewer({
       return;
     }
 
+    // The server sends the raw markdown heading text; the DOM contains the
+    // rendered text (inline markup stripped). Normalize both for comparison.
+    const wanted = stripInlineMarkdown(scrollToHeading);
     const headings = articleRef.current.querySelectorAll(
       "h1, h2, h3, h4, h5, h6",
     );
     const target = Array.from(headings).find(
-      (el) => (el.textContent ?? "").trim() === scrollToHeading,
+      (el) => (el.textContent ?? "").trim() === wanted,
     );
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
-      onScrolledToHeading?.();
     }
+    // Always consume the pending heading so it cannot scroll a file opened
+    // later by coincidence of matching text.
+    onScrolledToHeading?.();
   }, [loading, renderedContent, scrollToHeading, onScrolledToHeading]);
 
   useLayoutEffect(() => {

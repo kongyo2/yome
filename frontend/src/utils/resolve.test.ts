@@ -176,6 +176,9 @@ describe("resolveImageSrc", () => {
 describe("extractLanguage", () => {
   it("extracts language from className", () => {
     expect(extractLanguage("language-typescript")).toBe("typescript");
+    expect(extractLanguage("language-c++")).toBe("c++");
+    expect(extractLanguage("language-c#")).toBe("c#");
+    expect(extractLanguage("language-objective-c")).toBe("objective-c");
   });
 
   it("extracts language with other classes present", () => {

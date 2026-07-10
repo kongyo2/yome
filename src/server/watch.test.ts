@@ -14,7 +14,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   state.closeAllSubscribers();
-  state.closeBackup();
+  await state.closeBackup();
   await rm(tmp, { recursive: true, force: true });
 });
 

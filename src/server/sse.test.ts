@@ -22,7 +22,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   state.closeAllSubscribers();
-  state.closeBackup();
+  await state.closeBackup();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(tmp, { recursive: true, force: true });
