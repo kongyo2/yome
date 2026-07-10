@@ -28,7 +28,7 @@ describe("enableBackup", () => {
     expect(saves.length).toBeGreaterThanOrEqual(1);
     expect(saves.at(-1)?.groups["default"]).toEqual([path]);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 
   it("flushes the final save when closeBackup is called", async () => {
@@ -40,10 +40,42 @@ describe("enableBackup", () => {
     const path = join(tmp, "b.md");
     writeFileSync(path, "# B");
     state.addFile(path, "default");
-    state.closeBackup();
+    await state.closeBackup();
     state.closeAllSubscribers();
     expect(saves.length).toBeGreaterThanOrEqual(1);
     expect(saves.at(-1)?.groups["default"]).toEqual([path]);
+  });
+
+  it("awaits an async save callback before closeBackup resolves", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    let settled = false;
+    state.enableBackup(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      settled = true;
+    });
+    const path = join(tmp, "c.md");
+    writeFileSync(path, "# C");
+    state.addFile(path, "default");
+    await state.closeBackup();
+    expect(settled).toBe(true);
+    state.closeAllSubscribers();
+  });
+
+  it("does not save again after closeBackup", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    let saveCount = 0;
+    state.enableBackup(() => {
+      saveCount++;
+    });
+    const path = join(tmp, "d.md");
+    writeFileSync(path, "# D");
+    state.addFile(path, "default");
+    await state.closeBackup();
+    const after = saveCount;
+    state.addUploadedFile("late.md", "late", "default");
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(saveCount).toBe(after);
+    state.closeAllSubscribers();
   });
 });
 
@@ -62,6 +94,6 @@ describe("snapshotRestoreData", () => {
       { name: "stdin.md", content: "hello", group: "default" },
     ]);
     state.closeAllSubscribers();
-    state.closeBackup();
+    await state.closeBackup();
   });
 });

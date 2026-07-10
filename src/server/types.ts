@@ -20,17 +20,9 @@ export interface GlobPattern {
   recursive: boolean;
 }
 
-export interface UploadedFileData {
-  name: string;
-  content: string;
-  group: string;
-}
-
-export interface RestoreData {
-  groups: Record<string, string[]>;
-  patterns?: Record<string, string[]>;
-  uploadedFiles?: UploadedFileData[];
-}
+// Restore/backup data shapes live in common/restore.ts (shared with the CLI
+// and the backup store); re-exported here for server-side convenience.
+export type { RestoreData, UploadedFileData } from "../common/restore.js";
 
 export interface FileRef {
   id: string;

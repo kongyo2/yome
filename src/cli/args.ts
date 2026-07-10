@@ -86,10 +86,6 @@ export async function resolveArgs(
   return { files, patterns };
 }
 
-export interface ResolveUnwatchOpts {
-  registered: string[]; // already-fetched patterns for the group
-}
-
 export async function resolveUnwatchArgs(
   args: string[],
   recursive: boolean,

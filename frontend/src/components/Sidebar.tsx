@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { FileEntry, Group, SearchResult } from "../hooks/useApi";
 import { removeFile, moveFile } from "../hooks/useApi";
-import { buildFileUrl } from "../utils/groups";
+import { buildFileUrl, sortGroupsForDisplay } from "../utils/groups";
 import { isPlainLeftClick } from "../utils/linkClick";
 import { escapeRegExp } from "../utils/regex";
 import type { ViewMode } from "./ViewModeToggle";
@@ -290,15 +290,10 @@ export function Sidebar({
     [activeGroup],
   );
 
-  const otherGroups = useMemo(() => {
-    return [...groups]
-      .filter((g) => g.name !== activeGroup)
-      .sort((a, b) => {
-        if (a.name === "default") return 1;
-        if (b.name === "default") return -1;
-        return a.name.localeCompare(b.name);
-      });
-  }, [groups, activeGroup]);
+  const otherGroups = useMemo(
+    () => sortGroupsForDisplay(groups.filter((g) => g.name !== activeGroup)),
+    [groups, activeGroup],
+  );
 
   const handleMoveToGroup = useCallback(
     async (id: string, group: string) => {
@@ -334,7 +329,9 @@ export function Sidebar({
   const handleRemove = useCallback(
     (id: string) => {
       setMenuOpenId(null);
-      removeFile(activeGroup, id);
+      // A failed delete resolves itself on the next SSE update; just avoid
+      // an unhandled rejection here.
+      removeFile(activeGroup, id).catch(() => {});
     },
     [activeGroup],
   );

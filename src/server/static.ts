@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { dirname, join, posix, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -109,8 +109,4 @@ export function sendFile(res: ServerResponse, path: string): void {
     }
   });
   stream.pipe(res);
-}
-
-export function joinPosix(...p: string[]): string {
-  return posix.join(...p);
 }

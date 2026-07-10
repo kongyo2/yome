@@ -136,3 +136,20 @@ describe("stripMdxSyntax", () => {
     expect(stripMdxSyntax(input)).toBe("# Content");
   });
 });
+
+describe("indented fences", () => {
+  it("treats fences indented up to 3 spaces as fences", () => {
+    const input = [
+      "# Doc",
+      "  ```",
+      "import notCode from 'x'",
+      "  ```",
+      "<Widget />",
+    ].join("\n");
+    const output = stripMdxSyntax(input);
+    // The import inside the indented fence must be preserved.
+    expect(output).toContain("import notCode from 'x'");
+    // JSX outside the fence is still escaped.
+    expect(output).toContain("&lt;Widget />");
+  });
+});

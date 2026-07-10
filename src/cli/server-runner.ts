@@ -1,15 +1,12 @@
-import { readFile, rm, writeFile as fsWriteFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { State } from "../server/state.js";
 import { createServer } from "../server/http.js";
 import { save as saveBackup } from "../backup/index.js";
-import type { RestoreData } from "../backup/index.js";
 import { buildDeeplink, type DeeplinkEntry } from "./display.js";
 import { logger } from "../logfile/index.js";
 import { DefaultGroup } from "../server/group.js";
 import open from "open";
+
+export { readRestoreFile, writeRestoreFile } from "../common/restore.js";
 
 export interface StartServerOpts {
   addr: string;
@@ -35,11 +32,8 @@ export async function startServer(
   const state = new State();
 
   if (!opts.disableBackup) {
-    state.enableBackup((data) => {
-      void saveBackup(opts.port, data).catch((err) =>
-        logger.warn("failed to save backup", { error: String(err) }),
-      );
-    });
+    // Return the promise so State can await the final flush during shutdown.
+    state.enableBackup((data) => saveBackup(opts.port, data));
   }
 
   const deeplinks: DeeplinkEntry[] = [];
@@ -104,8 +98,15 @@ export async function startServer(
       isShuttingDown = true;
       try {
         state.closeAllSubscribers();
-        state.closeBackup();
-        await new Promise<void>((r) => server.close(() => r()));
+        // Flush the final backup before the process can exit; a lost flush
+        // drops the last ~1s of session changes, and a late flush can undo
+        // a concurrent `--clear`.
+        await state.closeBackup();
+        const closed = new Promise<void>((r) => server.close(() => r()));
+        // Browsers hold idle keep-alive sockets that would otherwise delay
+        // close() by up to keepAliveTimeout.
+        server.closeIdleConnections();
+        await closed;
         if (restoreFile !== null) {
           resolve({ exitCode: 0, restartRequested: restoreFile });
         } else {
@@ -149,23 +150,4 @@ export async function startServer(
       }
     });
   });
-}
-
-export async function readRestoreFile(path: string): Promise<RestoreData> {
-  const data = await readFile(path, "utf8");
-  try {
-    await rm(path);
-  } catch {
-    // ignore
-  }
-  return JSON.parse(data) as RestoreData;
-}
-
-export async function writeRestoreFile(data: RestoreData): Promise<string> {
-  const p = join(
-    tmpdir(),
-    `yome-restore-${randomBytes(8).toString("hex")}.json`,
-  );
-  await fsWriteFile(p, JSON.stringify(data), { mode: 0o600 });
-  return p;
 }

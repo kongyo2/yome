@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { extractHeadingLine, leadingColumns } from "./title.js";
+import { extractHeadingLine, FenceTracker } from "./title.js";
 import type { FileEntry } from "./types.js";
 
 export interface SearchAnchor {
@@ -42,40 +42,14 @@ export function findSearchMatches(
   const lines = content.split("\n");
   const matches: SearchMatch[] = [];
   let currentHeading = "";
-  let fenceChar = 0;
-  let fenceLen = 0;
+  const fences = new FenceTracker();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
-    const trimmed = line.trim();
-    const indented = leadingColumns(line) >= 4;
 
-    if (fenceChar !== 0) {
-      if (
-        !indented &&
-        trimmed.length > 0 &&
-        trimmed.charCodeAt(0) === fenceChar
-      ) {
-        let fl = 0;
-        while (fl < trimmed.length && trimmed.charCodeAt(fl) === fenceChar)
-          fl++;
-        const rest = trimmed.substring(fl).replace(/^[ \t]+/, "");
-        if (fl >= fenceLen && rest === "") {
-          fenceChar = 0;
-          fenceLen = 0;
-        }
-      }
-    } else if (!indented) {
-      if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-        const fc = trimmed.charCodeAt(0);
-        let fl = 0;
-        while (fl < trimmed.length && trimmed.charCodeAt(fl) === fc) fl++;
-        fenceChar = fc;
-        fenceLen = fl;
-      } else {
-        const h = extractHeadingLine(line);
-        if (h !== "") currentHeading = h;
-      }
+    if (!fences.feed(line) && !fences.inFence) {
+      const h = extractHeadingLine(line);
+      if (h !== "") currentHeading = h;
     }
 
     const idx = line.toLowerCase().indexOf(needle);

@@ -126,8 +126,6 @@ class RotatingWriter {
 }
 
 let activeWriter: RotatingWriter | null = null;
-let originalStderr: typeof process.stderr.write | null = null;
-let originalStdout: typeof process.stdout.write | null = null;
 
 export function setup(port: number): () => void {
   const dir = logDir();
@@ -142,10 +140,6 @@ export function setup(port: number): () => void {
     if (activeWriter === writer) activeWriter = null;
     writer.close();
   };
-}
-
-export function getWriter(): RotatingWriter | null {
-  return activeWriter;
 }
 
 export interface LogFields {
@@ -190,20 +184,3 @@ export const logger = {
     writeJson("DEBUG", msg, fields);
   },
 };
-
-export function redirectStdio(): void {
-  if (originalStderr || originalStdout) return;
-  originalStderr = process.stderr.write.bind(process.stderr);
-  originalStdout = process.stdout.write.bind(process.stdout);
-}
-
-export function restoreStdio(): void {
-  if (originalStderr) {
-    process.stderr.write = originalStderr;
-    originalStderr = null;
-  }
-  if (originalStdout) {
-    process.stdout.write = originalStdout;
-    originalStdout = null;
-  }
-}

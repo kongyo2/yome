@@ -1,5 +1,5 @@
-import { stat, readFile } from "node:fs/promises";
-import { statSync, readFileSync, openSync, readSync, closeSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { statSync, openSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, join, sep, relative } from "node:path";
 import { watch as chokidarWatch, type FSWatcher } from "chokidar";
 import { logger } from "../logfile/index.js";
@@ -56,7 +56,7 @@ function readFileHead(path: string): Buffer | null {
   try {
     const buf = Buffer.alloc(HEAD_FILE_SIZE_LIMIT);
     const n = readSync(fd, buf, 0, HEAD_FILE_SIZE_LIMIT, 0);
-    return buf.slice(0, n);
+    return buf.subarray(0, n);
   } finally {
     closeSync(fd);
   }
@@ -81,7 +81,8 @@ export class State {
   private fileChangeDebounceMs: number;
   private fileChangeTimers = new Map<string, NodeJS.Timeout>();
 
-  private backupSaveFn: ((data: RestoreData) => void) | null = null;
+  private backupSaveFn: ((data: RestoreData) => void | Promise<void>) | null =
+    null;
   private backupDirty = false;
   private backupTimer: NodeJS.Timeout | null = null;
   private backupClosed = false;
@@ -618,25 +619,25 @@ export class State {
       throw new Error(`base path "${base}" is not a directory`);
     }
 
-    let added = true;
-    for (const p of this.patterns) {
-      if (p.pattern === absPattern && p.group === groupName) {
-        added = false;
-        break;
+    // Re-registering an existing pattern is idempotent: skip the watcher
+    // bookkeeping (dir watches are ref-counted) but still expand the glob so
+    // the caller gets the current matches instead of a misleading empty list.
+    const isNew = !this.patterns.some(
+      (p) => p.pattern === absPattern && p.group === groupName,
+    );
+    if (isNew) {
+      const gp: GlobPattern = {
+        pattern: absPattern,
+        patternSlash: slash,
+        baseDir: base,
+        group: groupName,
+        recursive: isRecursivePattern(absPattern),
+      };
+      this.patterns.push(gp);
+      if (!this.groups.has(groupName)) {
+        this.groups.set(groupName, { name: groupName, files: [] });
       }
-    }
-    if (!added) return [];
-
-    const gp: GlobPattern = {
-      pattern: absPattern,
-      patternSlash: slash,
-      baseDir: base,
-      group: groupName,
-      recursive: isRecursivePattern(absPattern),
-    };
-    this.patterns.push(gp);
-    if (!this.groups.has(groupName)) {
-      this.groups.set(groupName, { name: groupName, files: [] });
+      await this.watchDirsForPattern(gp);
     }
 
     const matches = await expandGlob(base, rel, { filesOnly: true });
@@ -651,12 +652,7 @@ export class State {
         logger.warn("skipping file", { path: m, error: String(err) });
       }
     }
-    await this.watchDirsForPattern(gp);
     return entries;
-  }
-
-  listPatterns(): GlobPattern[] {
-    return [...this.patterns];
   }
 
   patternsForGroup(groupName: string): string[] {
@@ -760,15 +756,15 @@ export class State {
       return;
     }
     if (info.isDirectory()) {
-      let watched = false;
       for (const gp of patterns) {
         if (!gp.recursive) continue;
-        if (!path.startsWith(gp.baseDir)) continue;
-        if (!watched) {
-          this.addDirWatch(path);
-          await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
-          watched = true;
+        // Path-aware boundary: "/docs2" must not match baseDir "/docs".
+        if (path !== gp.baseDir && !path.startsWith(gp.baseDir + sep)) {
+          continue;
         }
+        this.addDirWatch(path);
+        await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
+        break;
       }
       return;
     }
@@ -827,18 +823,23 @@ export class State {
     return data;
   }
 
-  enableBackup(saveFn: (data: RestoreData) => void): void {
+  enableBackup(saveFn: (data: RestoreData) => void | Promise<void>): void {
     this.backupSaveFn = saveFn;
   }
 
-  closeBackup(): void {
+  // closeBackup flushes the final save and resolves once it has completed.
+  // Shutdown must await this: the process exits right after the HTTP server
+  // closes, and a fire-and-forget write could be lost — or land *after* a
+  // `--clear` client already deleted the backup file, resurrecting the
+  // session it just cleared.
+  async closeBackup(): Promise<void> {
     if (this.backupClosed) return;
     this.backupClosed = true;
     if (this.backupTimer) {
       clearTimeout(this.backupTimer);
       this.backupTimer = null;
     }
-    this.saveBackupNow();
+    await this.saveBackupNow();
   }
 
   private markDirty(): void {
@@ -847,38 +848,18 @@ export class State {
     if (this.backupTimer) clearTimeout(this.backupTimer);
     this.backupTimer = setTimeout(() => {
       this.backupTimer = null;
-      this.saveBackupNow();
+      void this.saveBackupNow();
     }, BACKUP_DEBOUNCE_MS);
   }
 
-  private saveBackupNow(): void {
+  private async saveBackupNow(): Promise<void> {
     if (!this.backupSaveFn || !this.backupDirty) return;
     this.backupDirty = false;
     const data = this.snapshotRestoreData();
     try {
-      this.backupSaveFn(data);
+      await this.backupSaveFn(data);
     } catch (err) {
       logger.warn("backup save failed", { error: String(err) });
     }
   }
-}
-
-export async function writeRestoreFile(data: RestoreData): Promise<string> {
-  const { tmpdir } = await import("node:os");
-  const { writeFile: wf } = await import("node:fs/promises");
-  const { randomBytes } = await import("node:crypto");
-  const p = join(
-    tmpdir(),
-    `yome-restore-${randomBytes(8).toString("hex")}.json`,
-  );
-  await wf(p, JSON.stringify(data), { mode: 0o600 });
-  return p;
-}
-
-export function readFileContent(path: string): string {
-  return readFileSync(path, "utf8");
-}
-
-export async function readFileContentAsync(path: string): Promise<string> {
-  return await readFile(path, "utf8");
 }

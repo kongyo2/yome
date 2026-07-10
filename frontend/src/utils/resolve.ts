@@ -50,6 +50,7 @@ export function resolveImageSrc(
 }
 
 export function extractLanguage(className: string | undefined): string | null {
-  const match = /language-(\w+)/.exec(className || "");
+  // Language ids can contain +, #, and - (c++, c#, objective-c).
+  const match = /language-([\w+#-]+)/.exec(className || "");
   return match ? match[1] : null;
 }

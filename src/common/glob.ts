@@ -1,6 +1,6 @@
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join, normalize, posix, sep, isAbsolute } from "node:path";
+import { join, sep, isAbsolute } from "node:path";
 import picomatch from "picomatch";
 
 const GLOB_CHARS = /[*?[\]]/;
@@ -37,14 +37,18 @@ export function toSlash(p: string): string {
   return p.split(sep).join("/");
 }
 
-export function fromSlash(p: string): string {
-  if (sep === "/") return p;
-  return p.split("/").join(sep);
-}
+// Compiled matchers are cached because matchPattern runs for every watcher
+// event against every registered pattern.
+const matcherCache = new Map<string, (p: string) => boolean>();
 
 // matchPattern returns true if absPath matches absPattern using doublestar semantics.
 export function matchPattern(absPattern: string, absPath: string): boolean {
-  const matcher = picomatch(toSlash(absPattern), { dot: false, nocase: false });
+  const key = toSlash(absPattern);
+  let matcher = matcherCache.get(key);
+  if (!matcher) {
+    matcher = picomatch(key, { dot: false, nocase: false });
+    matcherCache.set(key, matcher);
+  }
   return matcher(toSlash(absPath));
 }
 
@@ -93,8 +97,18 @@ export async function expandGlob(
         if (!filesOnly && matcher(childRel)) {
           results.push(childAbs);
         }
-      } else if (e.isFile() || e.isSymbolicLink()) {
-        if (matcher(childRel)) {
+      } else {
+        let isFile = e.isFile();
+        // A symlink only counts as a file if its target is a regular file;
+        // a symlink to a directory must not appear in file matches.
+        if (e.isSymbolicLink()) {
+          try {
+            isFile = (await stat(childAbs)).isFile();
+          } catch {
+            isFile = false;
+          }
+        }
+        if (isFile && matcher(childRel)) {
           results.push(childAbs);
         }
       }
@@ -109,57 +123,6 @@ export async function expandGlob(
   return results;
 }
 
-export function expandGlobSync(
-  base: string,
-  rel: string,
-  opts: GlobOptions = {},
-): string[] {
-  return globSyncWalk(base, rel, opts);
-}
-
-function globSyncWalk(base: string, rel: string, opts: GlobOptions): string[] {
-  const filesOnly = opts.filesOnly ?? true;
-  const matcher = picomatch(rel, { dot: false, nocase: false });
-  const isRecursive = rel.includes("**");
-  const maxDirDepth = isRecursive ? Infinity : rel.split("/").length - 1;
-  const results: string[] = [];
-
-  function walk(dir: string, relDir: string, depth: number): void {
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const childRel = relDir === "" ? e.name : `${relDir}/${e.name}`;
-      const childAbs = join(dir, e.name);
-      if (e.isDirectory()) {
-        if (depth < maxDirDepth) {
-          walk(childAbs, childRel, depth + 1);
-        }
-        if (!filesOnly && matcher(childRel)) {
-          results.push(childAbs);
-        }
-      } else {
-        let isFile = e.isFile();
-        if (e.isSymbolicLink()) {
-          try {
-            isFile = statSync(childAbs).isFile();
-          } catch {
-            isFile = false;
-          }
-        }
-        if (isFile && matcher(childRel)) {
-          results.push(childAbs);
-        }
-      }
-    }
-  }
-  walk(base, "", 0);
-  return results;
-}
-
 export function resolvePathAlias(orig: string): string {
   try {
     const canonical = realpathSync(orig);
@@ -170,31 +133,10 @@ export function resolvePathAlias(orig: string): string {
   }
 }
 
-export function statIsDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 // Naturally sort with case-insensitive locale-aware numeric compare.
 const collator = new Intl.Collator(undefined, { numeric: true });
 export function sortPathsNatural(paths: string[]): void {
   paths.sort((a, b) => collator.compare(a, b));
-}
-
-// Normalize a path consistently (no trailing separator unless root).
-export function cleanPath(p: string): string {
-  const normalized = normalize(p);
-  if (normalized.length > 1 && normalized.endsWith(sep)) {
-    return normalized.substring(0, normalized.length - 1);
-  }
-  return normalized;
-}
-
-export function joinPosix(...parts: string[]): string {
-  return posix.join(...parts);
 }
 
 // Walk a directory tree, calling fn(absPath) for each directory.
@@ -212,24 +154,6 @@ export async function walkDirs(
   for (const e of entries) {
     if (e.isDirectory()) {
       await walkDirs(join(baseDir, e.name), fn);
-    }
-  }
-}
-
-export function walkDirsSync(
-  baseDir: string,
-  fn: (path: string) => void,
-): void {
-  fn(baseDir);
-  let entries;
-  try {
-    entries = readdirSync(baseDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    if (e.isDirectory()) {
-      walkDirsSync(join(baseDir, e.name), fn);
     }
   }
 }

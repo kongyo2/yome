@@ -34,6 +34,7 @@ import {
   parseFileIdFromSearch,
   groupToPath,
   buildFileUrl,
+  sortGroupsForDisplay,
 } from "./utils/groups";
 import { isMarkdownFile } from "./utils/filetype";
 
@@ -165,22 +166,22 @@ export function App() {
 
   // Adjust derived state during render when groups or activeGroup changes
   if (groups !== prevGroups || activeGroup !== prevActiveGroup) {
+    const groupChanged = activeGroup !== prevActiveGroup;
+    const isInitialLoad = prevGroups.length === 0 && groups.length > 0;
     setPrevGroups(groups);
     setPrevActiveGroup(activeGroup);
 
-    // Active file selection and sidebar auto open/close
     const group = groups.find((g) => g.name === activeGroup);
-    setSidebarOpen(group != null && group.files.length >= 2);
+    // Auto open/close the sidebar only on initial load or a group switch;
+    // background refetches (SSE updates) must not override a manual toggle.
+    if (groupChanged || isInitialLoad) {
+      setSidebarOpen(group != null && group.files.length >= 2);
+    }
 
     if (groups.length === 0) {
       setActiveFileId(null);
     } else if (!group) {
-      const sortedGroups = [...groups].sort((a, b) => {
-        if (a.name === "default") return 1;
-        if (b.name === "default") return -1;
-        return a.name.localeCompare(b.name);
-      });
-      setActiveGroup(sortedGroups[0].name);
+      setActiveGroup(sortGroupsForDisplay(groups)[0].name);
     } else if (group.files.length === 0) {
       setActiveFileId(null);
     } else if (initialFileId != null) {
@@ -327,9 +328,12 @@ export function App() {
       loadGroups();
     },
     onFileChanged: (fileId) => {
-      captureScrollPosition();
       setActiveFileId((current) => {
         if (current === fileId) {
+          // Only re-render (and capture scroll for restoration) when the
+          // change concerns the file on screen; changes to other files must
+          // not arm a stale scroll restore.
+          captureScrollPosition();
           setContentRevision((r) => r + 1);
         }
         return current;
@@ -393,16 +397,23 @@ export function App() {
     });
   }, []);
 
-  const handleGroupChange = useCallback((name: string) => {
-    window.history.pushState(null, "", groupToPath(name));
-    setActiveGroup(name);
-    setActiveFileId(null);
-  }, []);
+  const handleGroupChange = useCallback(
+    (name: string) => {
+      // Re-selecting the current group must not blank the viewer or push a
+      // duplicate history entry.
+      if (name === activeGroup) return;
+      window.history.pushState(null, "", groupToPath(name));
+      setActiveGroup(name);
+      setActiveFileId(null);
+    },
+    [activeGroup],
+  );
 
   const handleFileSelect = useCallback(
     (fileId: string) => {
       window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
       setActiveFileId(fileId);
+      setPendingSearchHeading(null);
     },
     [activeGroup],
   );
@@ -427,9 +438,10 @@ export function App() {
 
   const handleRemoveFile = useCallback(() => {
     if (activeFileId != null) {
-      removeFile(activeGroup, activeFileId);
+      // On failure, refetch so the sidebar reflects the server's reality.
+      removeFile(activeGroup, activeFileId).catch(() => loadGroups());
     }
-  }, [activeFileId, activeGroup]);
+  }, [activeFileId, activeGroup, loadGroups]);
 
   const handleFilesReorder = useCallback(
     (groupName: string, fileIds: string[]) => {
@@ -444,9 +456,10 @@ export function App() {
           return { ...g, files: reordered };
         }),
       );
-      reorderFiles(groupName, fileIds);
+      // Roll back the optimistic order if the server rejected the reorder.
+      reorderFiles(groupName, fileIds).catch(() => loadGroups());
     },
-    [],
+    [loadGroups],
   );
 
   const headingIds = useMemo(() => headings.map((h) => h.id), [headings]);

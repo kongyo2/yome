@@ -2,8 +2,9 @@ import { describe, it, expect } from "vitest";
 import type { FileEntry } from "../hooks/useApi";
 import { buildTree } from "./buildTree";
 
+// Mirrors the server, which sends name = basename(path) for the host OS.
 function makeFile(id: string, path: string): FileEntry {
-  const name = path.split("/").pop()!;
+  const name = path.split(/[/\\]/).pop()!;
   return { id, name, path };
 }
 
@@ -154,5 +155,19 @@ describe("buildTree", () => {
     expect(root.children[1].name).toBe("a.md");
     expect(root.children[2].name).toBe("dropped.md");
     expect(root.children[2].file?.id).toBe("3");
+  });
+});
+
+describe("Windows-style paths", () => {
+  it("builds a tree from backslash-separated paths", () => {
+    const files = [
+      makeFile("1", "C:\\docs\\a.md"),
+      makeFile("2", "C:\\docs\\sub\\b.md"),
+    ];
+    const root = buildTree(files);
+    expect(root.children.length).toBe(2);
+    expect(root.children[0].name).toBe("sub");
+    expect(root.children[0].children[0].name).toBe("b.md");
+    expect(root.children[1].name).toBe("a.md");
   });
 });
