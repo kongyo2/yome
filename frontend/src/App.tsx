@@ -116,7 +116,13 @@ export function App() {
   const [pendingSearchHeading, setPendingSearchHeading] = useState<
     string | null
   >(null);
-  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
+  // Landing directly on a canonical ?file=…#heading URL (shared link, reload)
+  // must scroll to the heading once the async content renders — the browser's
+  // native hash jump fires before the target element exists.
+  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(() => {
+    if (!parseFileIdFromSearch(window.location.search)) return null;
+    return window.location.hash.slice(1) || null;
+  });
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() => {
     try {
       const stored = localStorage.getItem(VIEWMODE_STORAGE_KEY);
@@ -317,8 +323,12 @@ export function App() {
 
   useEffect(() => {
     const handlePopState = () => {
+      const fileId = parseFileIdFromSearch(window.location.search);
       setActiveGroup(parseGroupFromPath(window.location.pathname));
-      setActiveFileId(parseFileIdFromSearch(window.location.search));
+      setActiveFileId(fileId);
+      // Re-arm the anchor scroll for history entries that carry a hash, so
+      // Back/Forward lands on the linked section after the content re-renders.
+      setPendingAnchorId(fileId ? window.location.hash.slice(1) || null : null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
