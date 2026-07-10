@@ -30,9 +30,11 @@ import {
   resolveImageSrc,
   extractLanguage,
 } from "../utils/resolve";
+import { buildRelativeOpenUrl } from "../utils/groups";
 import { parseFrontmatter } from "../utils/frontmatter";
 import { stripMdxSyntax } from "../utils/mdx";
 import { isMarkdownFile, detectLanguage } from "../utils/filetype";
+import { formatFileLabel } from "../utils/fileLabel";
 import type { ZoomContent } from "./ZoomModal";
 import type { TocHeading } from "./TocPanel";
 import type { Components } from "react-markdown";
@@ -78,6 +80,9 @@ const sanitizeSchema = {
 interface MarkdownViewerProps {
   fileId: string;
   fileName: string;
+  title?: string;
+  filePath?: string;
+  scrollContainer?: HTMLElement | null;
   activeGroup: string;
   revision: number;
   onFileOpened: (fileId: string) => void;
@@ -299,13 +304,17 @@ function MermaidImageCopyButton({ svg }: { svg: string }) {
 
   const handleCopy = async () => {
     try {
-      const blob = await svgToPngBlob(svg);
+      // Pass the Blob promise directly to ClipboardItem so clipboard.write() is
+      // invoked synchronously inside the user gesture. Awaiting the blob first
+      // lets the transient user activation expire on Chrome and breaks the
+      // user-gesture requirement on Safari/WebKit, both surfacing as a silent
+      // no-op click.
       await navigator.clipboard.write([
-        new ClipboardItem({ "image/png": blob }),
+        new ClipboardItem({ "image/png": svgToPngBlob(svg) }),
       ]);
       setCopied(true);
-    } catch {
-      // clipboard API may fail in insecure contexts
+    } catch (err) {
+      console.error("mermaid copy image failed", err);
     }
   };
 
@@ -337,9 +346,20 @@ function MermaidImageCopyButton({ svg }: { svg: string }) {
 
 function svgToPngBlob(svgString: string): Promise<Blob> {
   return new Promise((resolve, reject) => {
+    // Mermaid flowchart/stateDiagram labels embed HTML void elements such as
+    // <br> inside <foreignObject>, which the strict "image/svg+xml" parser
+    // rejects silently (documentElement becomes <html> and the width, height,
+    // and viewBox lookups all return null). Parsing as "text/html" is lenient
+    // and still preserves the case of SVG attributes (viewBox,
+    // preserveAspectRatio, etc.). XMLSerializer then normalizes <br> to <br/>
+    // so the resulting data URL loads cleanly as an SVG image.
     const parser = new DOMParser();
-    const doc = parser.parseFromString(svgString, "image/svg+xml");
-    const svgEl = doc.documentElement;
+    const doc = parser.parseFromString(svgString, "text/html");
+    const svgEl = doc.querySelector("svg");
+    if (!svgEl) {
+      reject(new Error("No SVG element found"));
+      return;
+    }
 
     // Ensure xmlns is present for standalone SVG rendering
     if (!svgEl.getAttribute("xmlns")) {
@@ -595,6 +615,9 @@ function RawView({ content }: { content: string }) {
 export function MarkdownViewer({
   fileId,
   fileName,
+  title,
+  filePath,
+  scrollContainer,
   activeGroup,
   revision,
   onFileOpened,
@@ -617,7 +640,12 @@ export function MarkdownViewer({
   const [searchHitMarkers, setSearchHitMarkers] = useState<SearchHitMarker[]>(
     [],
   );
+  // The sticky bar shows the file name only while the document's own title is on
+  // screen (so it never duplicates it), then folds the title into the label once
+  // that heading scrolls up behind the bar.
+  const [showFullLabel, setShowFullLabel] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
+  const stickyLabelRef = useRef<HTMLDivElement>(null);
   const [prevFetchKey, setPrevFetchKey] = useState({
     activeGroup,
     fileId,
@@ -764,8 +792,18 @@ export function MarkdownViewer({
           case "markdown":
             return (
               <a
-                href={href}
-                onClick={(e) => handleLinkClick(e, resolved.hrefPath)}
+                href={buildRelativeOpenUrl(
+                  activeGroup,
+                  fileId,
+                  resolved.hrefPath,
+                )}
+                onClick={(e) => {
+                  // Modifier / middle clicks fall through so the browser opens the
+                  // self-resolving href in a new tab (App resolves it on load); only a
+                  // plain click navigates in place.
+                  if (!isPlainLeftClick(e)) return;
+                  handleLinkClick(e, resolved.hrefPath);
+                }}
                 {...props}
               >
                 {children}
@@ -931,6 +969,46 @@ export function MarkdownViewer({
     };
   }, [loading, renderedContent, isMarkdown, isRawView, searchQuery]);
 
+  useEffect(() => {
+    const article = articleRef.current;
+    const label = stickyLabelRef.current;
+    if (loading || !scrollContainer || !article || !label) {
+      setShowFullLabel(false);
+      return;
+    }
+    // The first heading is stable for this render, so query it once and reuse it
+    // across scroll/resize updates instead of re-querying on every frame.
+    const heading = article.querySelector("h1, h2, h3, h4, h5, h6");
+    if (!heading) {
+      // Nothing to fold in: the label is already just the file name.
+      setShowFullLabel(false);
+      return;
+    }
+    // Fold the title into the label once that heading scrolls up behind the
+    // sticky bar. A direct geometry read avoids the IntersectionObserver
+    // first-callback race that can latch a stale rect when content mounts.
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      setShowFullLabel(
+        heading.getBoundingClientRect().bottom <=
+          label.getBoundingClientRect().bottom,
+      );
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(update);
+    };
+    update();
+    scrollContainer.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      if (frame !== 0) cancelAnimationFrame(frame);
+      scrollContainer.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+    };
+    // isWide/fontSize/isTocOpen change the layout, so recompute on those too.
+  }, [loading, renderedContent, scrollContainer, isWide, fontSize, isTocOpen]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-50 text-gh-text-secondary text-sm">
@@ -941,25 +1019,38 @@ export function MarkdownViewer({
 
   return (
     <div className="flex items-start gap-2">
-      <article
-        ref={articleRef}
-        className={`markdown-body relative min-w-0 flex-1 overflow-visible${isWide ? " markdown-body--wide" : ""}${fontSize !== "medium" ? ` markdown-body--${fontSize}` : ""}`}
-      >
-        <div className="pointer-events-none absolute inset-0 z-10 overflow-visible">
-          {searchHitMarkers.map((marker, index) => (
-            <div
-              key={`${marker.top}:${marker.height}:${index}`}
-              className="absolute w-1 rounded-none bg-gh-text/80"
-              style={{
-                left: SEARCH_HIT_COLUMN_OFFSET,
-                top: marker.top,
-                height: marker.height,
-              }}
-            />
-          ))}
+      <div className="min-w-0 flex-1">
+        {/* Always-visible sticky label. The negative top cancels the scroll
+            container's p-8 top padding so the bar pins flush under the global
+            header instead of leaving a gap that scrolling content would show
+            through. */}
+        <div
+          ref={stickyLabelRef}
+          className={`sticky -top-8 z-20 mx-auto mb-4 border-b border-gh-border bg-gh-bg py-2 text-sm font-medium text-right text-gh-text-secondary overflow-hidden text-ellipsis whitespace-nowrap${isWide ? "" : " max-w-[980px]"}`}
+          title={!uploaded && filePath ? filePath : fileName}
+        >
+          {showFullLabel ? formatFileLabel(fileName, title) : fileName}
         </div>
-        {renderedContent}
-      </article>
+        <article
+          ref={articleRef}
+          className={`markdown-body relative overflow-visible${isWide ? " markdown-body--wide" : ""}${fontSize !== "medium" ? ` markdown-body--${fontSize}` : ""}`}
+        >
+          <div className="pointer-events-none absolute inset-0 z-10 overflow-visible">
+            {searchHitMarkers.map((marker, index) => (
+              <div
+                key={`${marker.top}:${marker.height}:${index}`}
+                className="absolute w-1 rounded-none bg-gh-text/80"
+                style={{
+                  left: SEARCH_HIT_COLUMN_OFFSET,
+                  top: marker.top,
+                  height: marker.height,
+                }}
+              />
+            ))}
+          </div>
+          {renderedContent}
+        </article>
+      </div>
       <div className="shrink-0 flex flex-col gap-2 -mr-4 -mt-4 sticky -top-4">
         {isMarkdown && (
           <TocToggle isTocOpen={isTocOpen} onToggle={onTocToggle} />

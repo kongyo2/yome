@@ -1,6 +1,6 @@
 {
   "name": "@kongyo2/yome",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Markdown viewer that opens .md files in a browser with live-reload",
   "keywords": [
     "markdown",
@@ -62,7 +62,7 @@
   "devDependencies": {
     "@types/node": "^24.10.4",
     "@types/picomatch": "^4.0.2",
-    "oxlint": "^1.63.0",
+    "oxlint": "^1.70.0",
     "prettier": "^3.4.2",
     "tsx": "^4.20.6",
     "typescript": "~5.9.3",

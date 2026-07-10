@@ -186,6 +186,19 @@ describe("GET /_/api/groups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].name).toBe("default");
     expect(groups[0].files).toHaveLength(1);
+    expect(groups[0].patterns).toEqual([]);
+  });
+  it("includes watch patterns registered for the group", async () => {
+    await mkdir(join(tmp, "docs"));
+    const pattern = join(tmp, "docs", "*.md");
+    const add = await postJson("/_/api/patterns", {
+      pattern,
+      group: "default",
+    });
+    expect(add.status).toBe(200);
+    const groups = JSON.parse((await get("/_/api/groups")).body);
+    const def = groups.find((g: { name: string }) => g.name === "default");
+    expect(def.patterns).toEqual([pattern]);
   });
 });
 

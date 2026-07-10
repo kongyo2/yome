@@ -91,7 +91,7 @@ export function GroupDropdown({
         </svg>
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1 min-w-40 bg-gh-bg-sidebar border border-gh-border rounded-md shadow-lg z-10 flex flex-col">
+        <div className="absolute left-0 top-full mt-1 min-w-40 bg-gh-bg-sidebar border border-gh-border rounded-md shadow-lg z-30 flex flex-col">
           {canScrollUp && (
             <div className="flex justify-center py-0.5 text-gh-text-secondary border-b border-gh-border">
               <svg className="size-3" fill="currentColor" viewBox="0 0 12 12">
