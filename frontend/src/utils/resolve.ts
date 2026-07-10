@@ -1,7 +1,7 @@
 export type LinkResolution =
   | { type: "external" }
   | { type: "hash" }
-  | { type: "markdown"; hrefPath: string }
+  | { type: "markdown"; hrefPath: string; fragment?: string }
   | { type: "file"; rawUrl: string }
   | { type: "passthrough" };
 
@@ -25,9 +25,14 @@ export function resolveLink(
   if (href.startsWith("#")) {
     return { type: "hash" };
   }
-  const hrefPath = href.split("#")[0];
+  const [hrefPath, ...fragmentParts] = href.split("#");
   if (hrefPath.endsWith(".md") || hrefPath.endsWith(".mdx")) {
-    return { type: "markdown", hrefPath };
+    // Keep the fragment (e.g. api.md#auth) so cross-file section links can
+    // scroll to the target heading after the file opens.
+    const fragment = fragmentParts.join("#");
+    return fragment === ""
+      ? { type: "markdown", hrefPath }
+      : { type: "markdown", hrefPath, fragment };
   }
   const basename = hrefPath.split("/").pop() || "";
   if (basename.includes(".")) {

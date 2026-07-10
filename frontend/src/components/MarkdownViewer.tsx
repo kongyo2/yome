@@ -85,7 +85,7 @@ interface MarkdownViewerProps {
   scrollContainer?: HTMLElement | null;
   activeGroup: string;
   revision: number;
-  onFileOpened: (fileId: string) => void;
+  onFileOpened: (fileId: string, anchorId?: string) => void;
   onHeadingsChange: (headings: TocHeading[]) => void;
   onContentRendered?: () => void;
   isTocOpen: boolean;
@@ -97,6 +97,8 @@ interface MarkdownViewerProps {
   onZoom?: (content: ZoomContent) => void;
   scrollToHeading?: string | null;
   onScrolledToHeading?: () => void;
+  scrollToAnchorId?: string | null;
+  onScrolledToAnchor?: () => void;
   searchQuery?: string | null;
 }
 
@@ -632,6 +634,8 @@ export function MarkdownViewer({
   onZoom,
   scrollToHeading,
   onScrolledToHeading,
+  scrollToAnchorId,
+  onScrolledToAnchor,
   searchQuery,
 }: MarkdownViewerProps) {
   const [content, setContent] = useState("");
@@ -685,11 +689,15 @@ export function MarkdownViewer({
   }, [activeGroup, fileId, revision]);
 
   const handleLinkClick = useCallback(
-    async (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    async (
+      e: React.MouseEvent<HTMLAnchorElement>,
+      href: string,
+      fragment?: string,
+    ) => {
       e.preventDefault();
       try {
         const entry = await openRelativeFile(activeGroup, fileId, href);
-        onFileOpened(entry.id);
+        onFileOpened(entry.id, fragment);
       } catch {
         // fallback: do nothing
       }
@@ -796,13 +804,14 @@ export function MarkdownViewer({
                   activeGroup,
                   fileId,
                   resolved.hrefPath,
+                  resolved.fragment,
                 )}
                 onClick={(e) => {
                   // Modifier / middle clicks fall through so the browser opens the
                   // self-resolving href in a new tab (App resolves it on load); only a
                   // plain click navigates in place.
                   if (!isPlainLeftClick(e)) return;
-                  handleLinkClick(e, resolved.hrefPath);
+                  handleLinkClick(e, resolved.hrefPath, resolved.fragment);
                 }}
                 {...props}
               >
@@ -934,6 +943,36 @@ export function MarkdownViewer({
     // later by coincidence of matching text.
     onScrolledToHeading?.();
   }, [loading, renderedContent, scrollToHeading, onScrolledToHeading]);
+
+  // Cross-file links may carry a fragment (api.md#auth). Once the target file
+  // has rendered, scroll to the matching element id (rehype-slug ids for
+  // headings, footnote ids, etc.).
+  useLayoutEffect(() => {
+    if (loading || !scrollToAnchorId || !articleRef.current) {
+      return;
+    }
+    let target = document.getElementById(scrollToAnchorId);
+    if (!target) {
+      // Authors may percent-encode non-ASCII fragments; try the decoded form.
+      try {
+        target = document.getElementById(decodeURIComponent(scrollToAnchorId));
+      } catch {
+        /* malformed encoding — give up */
+      }
+    }
+    if (target) {
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      target.scrollIntoView({
+        behavior: reduced ? "auto" : "smooth",
+        block: "start",
+      });
+    }
+    // Always consume the pending anchor so it cannot scroll a file rendered
+    // later by coincidence of a matching id.
+    onScrolledToAnchor?.();
+  }, [loading, renderedContent, scrollToAnchorId, onScrolledToAnchor]);
 
   useLayoutEffect(() => {
     if (

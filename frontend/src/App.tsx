@@ -35,6 +35,7 @@ import {
   parseGroupFromPath,
   parseFileIdFromSearch,
   parseRelativeOpenFromSearch,
+  isSameOriginReferrer,
   groupToPath,
   buildFileUrl,
   sortGroupsForDisplay,
@@ -115,6 +116,7 @@ export function App() {
   const [pendingSearchHeading, setPendingSearchHeading] = useState<
     string | null
   >(null);
+  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() => {
     try {
       const stored = localStorage.getItem(VIEWMODE_STORAGE_KEY);
@@ -249,7 +251,8 @@ export function App() {
 
   // A relative Markdown link opened in a new tab lands here with from/open params
   // because the target file has no ID until the server resolves it. Resolve it once
-  // on load, then rewrite the URL to the canonical ?file= form.
+  // on load, then rewrite the URL to the canonical ?file= form (carrying any
+  // #fragment along so the section link still lands on its heading).
   const relativeOpen = useRef(
     parseRelativeOpenFromSearch(window.location.search),
   );
@@ -260,11 +263,26 @@ export function App() {
     if (!rel) return;
     relativeOpenStarted.current = true;
     const group = parseGroupFromPath(window.location.pathname);
+    // Resolving performs a same-origin, state-mutating POST, so only honor
+    // URLs reached from this yome instance itself (modifier/middle-click).
+    // A cross-site or referrer-less navigation must not mutate the session —
+    // the server's Sec-Fetch-Site guard cannot see the original navigation.
+    if (!isSameOriginReferrer(document.referrer, window.location.origin)) {
+      relativeOpen.current = null;
+      window.history.replaceState(null, "", groupToPath(group));
+      return;
+    }
+    const fragment = window.location.hash.slice(1);
     openRelativeFile(group, rel.from, rel.open)
       .then((entry) => {
         relativeOpen.current = null;
         setInitialFileId(entry.id);
-        window.history.replaceState(null, "", buildFileUrl(group, entry.id));
+        setPendingAnchorId(fragment || null);
+        window.history.replaceState(
+          null,
+          "",
+          buildFileUrl(group, entry.id) + (fragment ? `#${fragment}` : ""),
+        );
         loadGroups();
         return undefined;
       })
@@ -447,15 +465,22 @@ export function App() {
       window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
       setActiveFileId(fileId);
       setPendingSearchHeading(null);
+      setPendingAnchorId(null);
     },
     [activeGroup],
   );
 
   const handleFileOpened = useCallback(
-    (fileId: string) => {
-      window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
+    (fileId: string, anchorId?: string) => {
+      const hash = anchorId ? `#${anchorId}` : "";
+      window.history.pushState(
+        null,
+        "",
+        buildFileUrl(activeGroup, fileId) + hash,
+      );
       setActiveFileId(fileId);
       setPendingSearchHeading(null);
+      setPendingAnchorId(anchorId ?? null);
     },
     [activeGroup],
   );
@@ -465,6 +490,7 @@ export function App() {
       window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
       setActiveFileId(fileId);
       setPendingSearchHeading(heading || null);
+      setPendingAnchorId(null);
     },
     [activeGroup],
   );
@@ -617,6 +643,8 @@ export function App() {
                 onZoom={handleZoom}
                 scrollToHeading={pendingSearchHeading}
                 onScrolledToHeading={() => setPendingSearchHeading(null)}
+                scrollToAnchorId={pendingAnchorId}
+                onScrolledToAnchor={() => setPendingAnchorId(null)}
                 searchQuery={searchQuery}
               />
             ) : (

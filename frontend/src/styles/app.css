@@ -44,6 +44,14 @@ body,
   margin: 0 auto;
 }
 
+/* The sticky file label bar overlays the top ~2.5rem of the scroll container,
+   so anchor navigation (hash links, ToC clicks, search results, footnotes —
+   anything using scrollIntoView / block: "start") must land targets below it
+   instead of underneath it. */
+.markdown-body [id] {
+  scroll-margin-top: 3rem;
+}
+
 .markdown-body.markdown-body--wide {
   max-width: none;
 }

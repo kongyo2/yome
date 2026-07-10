@@ -160,7 +160,9 @@ describe("MarkdownViewer relative links", () => {
     const notPrevented = fireEvent.click(link);
 
     expect(notPrevented).toBe(false); // preventDefault was called
-    await waitFor(() => expect(onFileOpened).toHaveBeenCalledWith("bbb22222"));
+    await waitFor(() =>
+      expect(onFileOpened).toHaveBeenCalledWith("bbb22222", undefined),
+    );
     expect(openRelativeFile).toHaveBeenCalledWith(
       "default",
       "aaa11111",
@@ -178,5 +180,78 @@ describe("MarkdownViewer relative links", () => {
     expect(notPrevented).toBe(true); // default preserved → new browser tab
     expect(openRelativeFile).not.toHaveBeenCalled();
     expect(onFileOpened).not.toHaveBeenCalled();
+  });
+
+  it("carries a fragment through the href and in-place open", async () => {
+    vi.mocked(fetchFileContent).mockResolvedValue({
+      content: "[Auth](api.md#auth)",
+      baseDir: "/repo",
+    });
+    vi.mocked(openRelativeFile).mockResolvedValue({
+      id: "ccc33333",
+      name: "api.md",
+      path: "/repo/api.md",
+    });
+    const onFileOpened = vi.fn();
+    renderViewer({ onFileOpened });
+    const link = await screen.findByRole("link", { name: "Auth" });
+
+    // The self-resolving href keeps the section for new-tab opens.
+    expect(link).toHaveAttribute("href", "/?from=aaa11111&open=api.md#auth");
+
+    // An in-place click forwards the anchor so App can scroll to it.
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(onFileOpened).toHaveBeenCalledWith("ccc33333", "auth"),
+    );
+    expect(openRelativeFile).toHaveBeenCalledWith(
+      "default",
+      "aaa11111",
+      "api.md",
+    );
+  });
+});
+
+describe("MarkdownViewer anchor scrolling", () => {
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  const scrollIntoView = vi.fn();
+
+  beforeEach(() => {
+    scrollIntoView.mockClear();
+    Element.prototype.scrollIntoView = scrollIntoView;
+  });
+
+  afterEach(() => {
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+  });
+
+  it("scrolls to the fragment target and consumes it once rendered", async () => {
+    vi.mocked(fetchFileContent).mockResolvedValue({
+      content: "# Hello\n\n## Auth\n\nbody",
+      baseDir: "/repo",
+    });
+    const scrolled = vi.fn();
+    renderViewer({ scrollToAnchorId: "auth", onScrolledToAnchor: scrolled });
+
+    await waitFor(() => expect(scrolled).toHaveBeenCalled());
+    // rehype-slug gives the "## Auth" heading id="auth"; it must be the target.
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    const target = scrollIntoView.mock.contexts[0] as HTMLElement;
+    expect(target.id).toBe("auth");
+  });
+
+  it("consumes a fragment with no matching target without scrolling", async () => {
+    vi.mocked(fetchFileContent).mockResolvedValue({
+      content: "# Hello",
+      baseDir: "/repo",
+    });
+    const scrolled = vi.fn();
+    renderViewer({
+      scrollToAnchorId: "does-not-exist",
+      onScrolledToAnchor: scrolled,
+    });
+
+    await waitFor(() => expect(scrolled).toHaveBeenCalled());
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

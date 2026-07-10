@@ -55,10 +55,26 @@ describe("resolveLink", () => {
     });
   });
 
-  it("strips anchor from markdown links", () => {
+  it("splits the anchor out of markdown links and keeps it as fragment", () => {
     expect(resolveLink("readme.md#title", "default", "e")).toEqual({
       type: "markdown",
       hrefPath: "readme.md",
+      fragment: "title",
+    });
+  });
+
+  it("omits fragment for a trailing bare #", () => {
+    expect(resolveLink("readme.md#", "default", "e")).toEqual({
+      type: "markdown",
+      hrefPath: "readme.md",
+    });
+  });
+
+  it("keeps extra # characters inside the fragment", () => {
+    expect(resolveLink("readme.md#a#b", "default", "e")).toEqual({
+      type: "markdown",
+      hrefPath: "readme.md",
+      fragment: "a#b",
     });
   });
 
@@ -83,10 +99,11 @@ describe("resolveLink", () => {
     });
   });
 
-  it("strips anchor from .mdx links", () => {
+  it("splits the anchor out of .mdx links and keeps it as fragment", () => {
     expect(resolveLink("page.mdx#section", "default", "e")).toEqual({
       type: "markdown",
       hrefPath: "page.mdx",
+      fragment: "section",
     });
   });
 
