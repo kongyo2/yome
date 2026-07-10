@@ -14,6 +14,7 @@ import { ZoomModal } from "./components/ZoomModal";
 import type { ZoomContent } from "./components/ZoomModal";
 import { TocPanel } from "./components/TocPanel";
 import type { TocHeading } from "./components/TocPanel";
+import { EmptyGroupMessage } from "./components/EmptyGroupMessage";
 import { useSSE } from "./hooks/useSSE";
 import { useFileDrop } from "./hooks/useFileDrop";
 import { useActiveHeading } from "./hooks/useActiveHeading";
@@ -25,6 +26,7 @@ import type { FileEntry, Group, SearchResult } from "./hooks/useApi";
 import {
   fetchGroups,
   fetchSearchResults,
+  openRelativeFile,
   removeFile,
   reorderFiles,
 } from "./hooks/useApi";
@@ -32,11 +34,14 @@ import {
   allFileIds,
   parseGroupFromPath,
   parseFileIdFromSearch,
+  parseRelativeOpenFromSearch,
+  isSameOriginReferrer,
   groupToPath,
   buildFileUrl,
   sortGroupsForDisplay,
 } from "./utils/groups";
 import { isMarkdownFile } from "./utils/filetype";
+import { formatFileLabel } from "./utils/fileLabel";
 
 const VIEWMODE_STORAGE_KEY = "yome-sidebar-viewmode";
 const WIDTH_STORAGE_KEY = "yome-layout-width";
@@ -81,8 +86,7 @@ export function formatTitle(
 ): string {
   if (fileEntry == undefined) return "yome";
   const { name, title } = fileEntry;
-  const fullTitle = title === undefined ? name : `${title} - ${name}`;
-  return `${fullTitle} | yome`;
+  return `${formatFileLabel(name, title)} | yome`;
 }
 
 export function isTocOpenForFile(
@@ -112,6 +116,13 @@ export function App() {
   const [pendingSearchHeading, setPendingSearchHeading] = useState<
     string | null
   >(null);
+  // Landing directly on a canonical ?file=…#heading URL (shared link, reload)
+  // must scroll to the heading once the async content renders — the browser's
+  // native hash jump fires before the target element exists.
+  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(() => {
+    if (!parseFileIdFromSearch(window.location.search)) return null;
+    return window.location.hash.slice(1) || null;
+  });
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() => {
     try {
       const stored = localStorage.getItem(VIEWMODE_STORAGE_KEY);
@@ -199,9 +210,16 @@ export function App() {
     }
   }
 
+  // Monotonic sequence for group loads: concurrent fetches (initial load, SSE
+  // resync, relative-open refetch) can resolve out of order, and applying a
+  // stale response would drop just-added files and roll the selection back.
+  // Only the newest call's response is applied.
+  const loadSeq = useRef(0);
   const loadGroups = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const data = await fetchGroups();
+      if (seq !== loadSeq.current) return;
       const newIds = allFileIds(data);
       const wasEmpty = knownFileIds.current.size === 0;
       const added: string[] = [];
@@ -233,21 +251,66 @@ export function App() {
     }
   }, []);
 
-  // Initial data fetch (setState inside .then() is async, not flagged by linter)
+  // A relative Markdown link opened in a new tab lands here with from/open params
+  // because the target file has no ID until the server resolves it. Resolve it once
+  // on load, then rewrite the URL to the canonical ?file= form (carrying any
+  // #fragment along so the section link still lands on its heading).
+  const relativeOpen = useRef(
+    parseRelativeOpenFromSearch(window.location.search),
+  );
+  const relativeOpenStarted = useRef(false);
+
+  // Initial data fetch. While a relative-open resolve is pending, the resolve
+  // effect below owns the first groups load: fetching here as well would just
+  // race it (loadGroups sequencing would discard the stale response anyway).
   useEffect(() => {
-    fetchGroups()
-      .then((data) => {
-        knownFileIds.current = allFileIds(data);
-        setGroups(data);
+    if (relativeOpen.current != null) return;
+    loadGroups();
+  }, [loadGroups]);
+
+  useEffect(() => {
+    if (relativeOpenStarted.current) return;
+    const rel = relativeOpen.current;
+    if (!rel) return;
+    relativeOpenStarted.current = true;
+    const group = parseGroupFromPath(window.location.pathname);
+    // Resolving performs a same-origin, state-mutating POST, so only honor
+    // URLs reached from this yome instance itself (modifier/middle-click).
+    // A cross-site or referrer-less navigation must not mutate the session —
+    // the server's Sec-Fetch-Site guard cannot see the original navigation.
+    if (!isSameOriginReferrer(document.referrer, window.location.origin)) {
+      relativeOpen.current = null;
+      window.history.replaceState(null, "", groupToPath(group));
+      loadGroups();
+      return;
+    }
+    const fragment = window.location.hash.slice(1);
+    openRelativeFile(group, rel.from, rel.open)
+      .then((entry) => {
+        relativeOpen.current = null;
+        setInitialFileId(entry.id);
+        setPendingAnchorId(fragment || null);
+        window.history.replaceState(
+          null,
+          "",
+          buildFileUrl(group, entry.id) + (fragment ? `#${fragment}` : ""),
+        );
+        loadGroups();
         return undefined;
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {
+        relativeOpen.current = null;
+        window.history.replaceState(null, "", groupToPath(group));
+        loadGroups();
+      });
+  }, [loadGroups]);
 
   // User-initiated navigation (file/group selection) calls pushState directly at
   // the call site. This effect only reconciles the URL with state for automatic
   // changes (initial mount, SSE updates, render-time fallbacks) via replaceState.
   useEffect(() => {
+    // A relative-open resolve is in flight; it owns the URL until it settles.
+    if (relativeOpen.current != null) return;
     // initialFileId hasn't been consumed yet — keep the URL as the user landed.
     if (initialFileId != null) return;
     const expectedUrl = activeFileId
@@ -260,8 +323,12 @@ export function App() {
 
   useEffect(() => {
     const handlePopState = () => {
+      const fileId = parseFileIdFromSearch(window.location.search);
       setActiveGroup(parseGroupFromPath(window.location.pathname));
-      setActiveFileId(parseFileIdFromSearch(window.location.search));
+      setActiveFileId(fileId);
+      // Re-arm the anchor scroll for history entries that carry a hash, so
+      // Back/Forward lands on the linked section after the content re-renders.
+      setPendingAnchorId(fileId ? window.location.hash.slice(1) || null : null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -300,12 +367,13 @@ export function App() {
     };
   }, [searchQuery, activeGroup]);
 
+  const activeGroupData = useMemo(
+    () => groups.find((g) => g.name === activeGroup),
+    [groups, activeGroup],
+  );
   const activeFile = useMemo(
-    () =>
-      groups
-        .find((g) => g.name === activeGroup)
-        ?.files.find((f) => f.id === activeFileId),
-    [groups, activeGroup, activeFileId],
+    () => activeGroupData?.files.find((f) => f.id === activeFileId),
+    [activeGroupData, activeFileId],
   );
   const activeFileName = activeFile?.name ?? "";
   const tocOpen = isTocOpenForFile(tocOpenMap, activeFileId, activeFileName);
@@ -414,15 +482,22 @@ export function App() {
       window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
       setActiveFileId(fileId);
       setPendingSearchHeading(null);
+      setPendingAnchorId(null);
     },
     [activeGroup],
   );
 
   const handleFileOpened = useCallback(
-    (fileId: string) => {
-      window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
+    (fileId: string, anchorId?: string) => {
+      const hash = anchorId ? `#${anchorId}` : "";
+      window.history.pushState(
+        null,
+        "",
+        buildFileUrl(activeGroup, fileId) + hash,
+      );
       setActiveFileId(fileId);
       setPendingSearchHeading(null);
+      setPendingAnchorId(anchorId ?? null);
     },
     [activeGroup],
   );
@@ -432,6 +507,7 @@ export function App() {
       window.history.pushState(null, "", buildFileUrl(activeGroup, fileId));
       setActiveFileId(fileId);
       setPendingSearchHeading(heading || null);
+      setPendingAnchorId(null);
     },
     [activeGroup],
   );
@@ -567,6 +643,9 @@ export function App() {
               <MarkdownViewer
                 fileId={activeFileId}
                 fileName={activeFileName}
+                title={activeFile?.title}
+                filePath={activeFile?.path}
+                scrollContainer={scrollContainer}
                 activeGroup={activeGroup}
                 revision={contentRevision}
                 onFileOpened={handleFileOpened}
@@ -581,12 +660,12 @@ export function App() {
                 onZoom={handleZoom}
                 scrollToHeading={pendingSearchHeading}
                 onScrolledToHeading={() => setPendingSearchHeading(null)}
+                scrollToAnchorId={pendingAnchorId}
+                onScrolledToAnchor={() => setPendingAnchorId(null)}
                 searchQuery={searchQuery}
               />
             ) : (
-              <div className="flex items-center justify-center h-50 text-gh-text-secondary text-sm">
-                No file selected
-              </div>
+              <EmptyGroupMessage group={activeGroupData} />
             )}
           </div>
         </main>

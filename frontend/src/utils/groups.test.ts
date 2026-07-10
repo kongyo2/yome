@@ -5,6 +5,9 @@ import {
   groupToPath,
   buildFileUrl,
   parseFileIdFromSearch,
+  parseRelativeOpenFromSearch,
+  buildRelativeOpenUrl,
+  isSameOriginReferrer,
   sortGroupsForDisplay,
 } from "./groups";
 import type { Group } from "../hooks/useApi";
@@ -157,5 +160,87 @@ describe("sortGroupsForDisplay", () => {
     const input = [mk("b"), mk("a")];
     sortGroupsForDisplay(input);
     expect(input.map((g) => g.name)).toEqual(["b", "a"]);
+  });
+});
+
+describe("buildRelativeOpenUrl", () => {
+  it("encodes source id and relative path for the default group", () => {
+    expect(buildRelativeOpenUrl("default", "abc12345", "next.md")).toBe(
+      "/?from=abc12345&open=next.md",
+    );
+  });
+
+  it("encodes a nested path for a named group", () => {
+    expect(buildRelativeOpenUrl("design", "abc12345", "docs/guide.mdx")).toBe(
+      "/design?from=abc12345&open=docs%2Fguide.mdx",
+    );
+  });
+
+  it("round-trips a path with spaces back to the original", () => {
+    const url = buildRelativeOpenUrl("default", "abc12345", "a b.md");
+    expect(parseRelativeOpenFromSearch(url.slice(url.indexOf("?")))?.open).toBe(
+      "a b.md",
+    );
+  });
+
+  it("appends a fragment as the URL hash", () => {
+    expect(buildRelativeOpenUrl("default", "abc12345", "api.md", "auth")).toBe(
+      "/?from=abc12345&open=api.md#auth",
+    );
+  });
+
+  it("omits the hash when no fragment is given", () => {
+    expect(buildRelativeOpenUrl("default", "abc12345", "api.md")).toBe(
+      "/?from=abc12345&open=api.md",
+    );
+  });
+});
+
+describe("isSameOriginReferrer", () => {
+  const origin = "http://localhost:6275";
+
+  it("accepts a referrer from the same origin", () => {
+    expect(
+      isSameOriginReferrer("http://localhost:6275/docs?file=x", origin),
+    ).toBe(true);
+  });
+
+  it("rejects an empty referrer (direct navigation or noreferrer)", () => {
+    expect(isSameOriginReferrer("", origin)).toBe(false);
+  });
+
+  it("rejects a cross-origin referrer", () => {
+    expect(isSameOriginReferrer("https://evil.example", origin)).toBe(false);
+  });
+
+  it("rejects a different port on the same host", () => {
+    expect(isSameOriginReferrer("http://localhost:6276/", origin)).toBe(false);
+  });
+
+  it("rejects a malformed referrer", () => {
+    expect(isSameOriginReferrer("not a url", origin)).toBe(false);
+  });
+});
+
+describe("parseRelativeOpenFromSearch", () => {
+  it("returns null for empty search", () => {
+    expect(parseRelativeOpenFromSearch("")).toBeNull();
+  });
+
+  it("parses from and open params", () => {
+    expect(
+      parseRelativeOpenFromSearch("?from=abc12345&open=docs%2Fguide.mdx"),
+    ).toEqual({
+      from: "abc12345",
+      open: "docs/guide.mdx",
+    });
+  });
+
+  it("returns null when from is missing", () => {
+    expect(parseRelativeOpenFromSearch("?open=next.md")).toBeNull();
+  });
+
+  it("returns null when open is missing", () => {
+    expect(parseRelativeOpenFromSearch("?from=abc12345")).toBeNull();
   });
 });

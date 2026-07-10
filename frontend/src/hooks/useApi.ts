@@ -9,6 +9,7 @@ export interface FileEntry {
 export interface Group {
   name: string;
   files: FileEntry[];
+  patterns?: string[];
 }
 
 export interface FileContent {

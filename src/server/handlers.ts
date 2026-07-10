@@ -277,6 +277,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       state.listGroups().map((g) => ({
         name: g.name,
         files: g.files.map(stripContent),
+        patterns: state.patternsForGroup(g.name),
       })),
     );
   }

@@ -51,3 +51,56 @@ export function parseFileIdFromSearch(search: string): string | null {
   if (raw == null || raw === "") return null;
   return raw;
 }
+
+export interface RelativeOpenRequest {
+  // ID of the source file the relative link was rendered in.
+  from: string;
+  // Relative path to resolve against the source file, as written in the link.
+  open: string;
+}
+
+// A relative Markdown link has no file ID until the server resolves it, so a new
+// browser tab cannot be pointed straight at buildFileUrl. This URL carries the
+// source file and the relative path instead, and the SPA resolves it on load.
+// A fragment (api.md#auth) rides along as the URL hash so the section survives
+// the round trip.
+export function buildRelativeOpenUrl(
+  groupName: string,
+  sourceFileId: string,
+  relativePath: string,
+  fragment?: string,
+): string {
+  const params = new URLSearchParams({
+    from: sourceFileId,
+    open: relativePath,
+  });
+  const hash = fragment ? `#${fragment}` : "";
+  return `${groupToPath(groupName)}?${params.toString()}${hash}`;
+}
+
+export function parseRelativeOpenFromSearch(
+  search: string,
+): RelativeOpenRequest | null {
+  const params = new URLSearchParams(search);
+  const from = params.get("from");
+  const open = params.get("open");
+  if (!from || !open) return null;
+  return { from, open };
+}
+
+// A relative-open URL triggers a same-origin, state-mutating POST when the SPA
+// loads, so honoring it from a cross-site navigation would let any web page
+// bypass the server's Sec-Fetch-Site guard by simply opening the URL. Only
+// navigations that originate from this yome instance itself (modifier-click,
+// middle-click, "Open link in new tab") carry a same-origin referrer.
+export function isSameOriginReferrer(
+  referrer: string,
+  origin: string,
+): boolean {
+  if (!referrer) return false;
+  try {
+    return new URL(referrer).origin === origin;
+  } catch {
+    return false;
+  }
+}
