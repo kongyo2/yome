@@ -204,9 +204,16 @@ export function App() {
     }
   }
 
+  // Monotonic sequence for group loads: concurrent fetches (initial load, SSE
+  // resync, relative-open refetch) can resolve out of order, and applying a
+  // stale response would drop just-added files and roll the selection back.
+  // Only the newest call's response is applied.
+  const loadSeq = useRef(0);
   const loadGroups = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       const data = await fetchGroups();
+      if (seq !== loadSeq.current) return;
       const newIds = allFileIds(data);
       const wasEmpty = knownFileIds.current.size === 0;
       const added: string[] = [];
@@ -238,17 +245,6 @@ export function App() {
     }
   }, []);
 
-  // Initial data fetch (setState inside .then() is async, not flagged by linter)
-  useEffect(() => {
-    fetchGroups()
-      .then((data) => {
-        knownFileIds.current = allFileIds(data);
-        setGroups(data);
-        return undefined;
-      })
-      .catch(() => {});
-  }, []);
-
   // A relative Markdown link opened in a new tab lands here with from/open params
   // because the target file has no ID until the server resolves it. Resolve it once
   // on load, then rewrite the URL to the canonical ?file= form (carrying any
@@ -257,6 +253,15 @@ export function App() {
     parseRelativeOpenFromSearch(window.location.search),
   );
   const relativeOpenStarted = useRef(false);
+
+  // Initial data fetch. While a relative-open resolve is pending, the resolve
+  // effect below owns the first groups load: fetching here as well would just
+  // race it (loadGroups sequencing would discard the stale response anyway).
+  useEffect(() => {
+    if (relativeOpen.current != null) return;
+    loadGroups();
+  }, [loadGroups]);
+
   useEffect(() => {
     if (relativeOpenStarted.current) return;
     const rel = relativeOpen.current;
@@ -270,6 +275,7 @@ export function App() {
     if (!isSameOriginReferrer(document.referrer, window.location.origin)) {
       relativeOpen.current = null;
       window.history.replaceState(null, "", groupToPath(group));
+      loadGroups();
       return;
     }
     const fragment = window.location.hash.slice(1);
@@ -289,6 +295,7 @@ export function App() {
       .catch(() => {
         relativeOpen.current = null;
         window.history.replaceState(null, "", groupToPath(group));
+        loadGroups();
       });
   }, [loadGroups]);
 
