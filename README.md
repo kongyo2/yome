@@ -4,6 +4,8 @@
 [![npm version](https://img.shields.io/npm/v/@kongyo2/yome.svg)](https://www.npmjs.com/package/@kongyo2/yome)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+[English](README.en.md) | 日本語
+
 `yome` は [k1LoW/mo](https://github.com/k1LoW/mo) の Node.js 移植版です。`.md` ファイルをブラウザで開き、保存と同時にライブリロードして表示する Markdown ビューアです。
 
 オリジナルの Go 実装の挙動を尊重しつつ、npm から `npx` で気軽に呼び出せるよう Node.js + React で書き直しています。
