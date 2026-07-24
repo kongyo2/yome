@@ -14,7 +14,7 @@ It faithfully follows the behavior of the original Go implementation while being
 
 ## Features
 
-- **Fast**: thoroughly optimized in v1.8.0 — ~3x faster CLI startup, 2–13x faster search core, half the initial browser JS, zero JS re-transfer on reloads (see [`PERFORMANCE.md`](PERFORMANCE.md))
+- **Fast**: thoroughly optimized in v1.8.0 — ~3x faster CLI startup, 2–13x faster search core, 42% less initial browser JS (49% less gzipped), zero JS re-transfer on warm reloads with browser caching (see [`PERFORMANCE.md`](PERFORMANCE.md))
 - **Live reload**: saving a file re-renders it in the browser instantly
 - **Single-server model**: shares the default port `6275`, so a later `yome` invocation adds files to the existing session
 - **Groups (tabs)**: split content into named groups with `--target`, each with its own URL and sidebar

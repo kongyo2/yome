@@ -522,24 +522,31 @@ function CodeBlockCopyButton({
   );
 }
 
-function CodeBlock({ language, code }: { language: string; code: string }) {
-  // Seed from the highlight cache so re-renders of an unchanged block (live
-  // reload, view toggles) paint highlighted output immediately.
-  const [html, setHtml] = useState(() => highlightCached(code, language) ?? "");
+// Resolves highlighted HTML for the current code/language pair. The
+// returned HTML is guaranteed to belong to the *current* inputs: a reused
+// component instance whose props just changed falls back to the cache (or
+// the plain fallback) instead of flashing the previous block's output for a
+// frame. Cache hits paint synchronously; misses resolve via lazy shiki with
+// a plaintext fallback for unsupported languages.
+function useHighlightedHtml(code: string, language: string): string {
+  const [rendered, setRendered] = useState(() => ({
+    code,
+    language,
+    html: highlightCached(code, language) ?? "",
+  }));
 
   useEffect(() => {
     let cancelled = false;
     const cached = highlightCached(code, language);
     if (cached != null) {
-      setHtml(cached);
+      setRendered({ code, language, html: cached });
       return () => {
         cancelled = true;
       };
     }
-    setHtml("");
     highlight(code, language)
       .then((result) => {
-        if (!cancelled) setHtml(result);
+        if (!cancelled) setRendered({ code, language, html: result });
         return undefined;
       })
       .catch(() => {
@@ -547,7 +554,7 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
         if (!cancelled) {
           highlight(code, "text")
             .then((result) => {
-              if (!cancelled) setHtml(result);
+              if (!cancelled) setRendered({ code, language, html: result });
               return undefined;
             })
             .catch(() => {});
@@ -557,6 +564,15 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
       cancelled = true;
     };
   }, [code, language]);
+
+  if (rendered.code === code && rendered.language === language) {
+    return rendered.html;
+  }
+  return highlightCached(code, language) ?? "";
+}
+
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const html = useHighlightedHtml(code, language);
 
   if (html) {
     return (
@@ -596,39 +612,7 @@ function HighlightedView({
   content: string;
   language: string;
 }) {
-  const [html, setHtml] = useState(
-    () => highlightCached(content, language) ?? "",
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    const cached = highlightCached(content, language);
-    if (cached != null) {
-      setHtml(cached);
-      return () => {
-        cancelled = true;
-      };
-    }
-    setHtml("");
-    highlight(content, language)
-      .then((result) => {
-        if (!cancelled) setHtml(result);
-        return undefined;
-      })
-      .catch(() => {
-        if (!cancelled) {
-          highlight(content, "text")
-            .then((result) => {
-              if (!cancelled) setHtml(result);
-              return undefined;
-            })
-            .catch(() => {});
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [content, language]);
+  const html = useHighlightedHtml(content, language);
 
   if (html) {
     return (

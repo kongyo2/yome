@@ -17,7 +17,6 @@ interface CompiledRoute {
 const EMPTY_PARAMS: Record<string, string> = Object.freeze({});
 
 export class Router {
-  private routes: CompiledRoute[] = [];
   // method -> exact path -> handler, for parameterless routes. These can
   // never overlap with a parameterized route (every registered param route
   // has a distinct segment count/shape), so checking them first returns the
@@ -56,7 +55,6 @@ export class Router {
       paramNames,
       handler,
     };
-    this.routes.push(compiled);
     if (paramNames.length === 0) {
       let byPath = this.staticRoutes.get(compiled.method);
       if (!byPath) {
