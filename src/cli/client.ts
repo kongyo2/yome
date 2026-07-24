@@ -13,11 +13,9 @@ import {
   probeServer,
 } from "./probe.js";
 import { toAbsolute } from "./args.js";
-import { buildDeeplink, type DeeplinkEntry } from "./display.js";
+import { buildDeeplink, writeJson, type DeeplinkEntry } from "./display.js";
 
-export function writeJson(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
-}
+export { writeJson };
 
 async function listPortsFromDir(
   dir: string,

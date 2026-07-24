@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { fstatSync, constants as fsConstants } from "node:fs";
 
 const MAX_STDIN_SIZE = 10 << 20;
@@ -33,11 +32,6 @@ export async function readStdin(
     chunks.push(buf);
   }
   const content = Buffer.concat(chunks).toString("utf8");
+  const { stdinName } = await import("./stdin-name.js");
   return { name: stdinName(content), content };
-}
-
-export function stdinName(content: string): string {
-  const h = createHash("sha256");
-  h.update(content);
-  return "stdin-" + h.digest("hex").substring(0, 7) + ".md";
 }

@@ -3,10 +3,10 @@ import {
   hasGlobChars,
   isRecursivePattern,
   splitPattern,
-  matchPattern,
   toSlash,
   sortPathsNatural,
 } from "./glob.js";
+import { matchPattern } from "./glob-match.js";
 
 describe("hasGlobChars", () => {
   it("detects *, ?, [", () => {
@@ -78,7 +78,7 @@ describe("expandGlob depth handling", () => {
       await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { expandGlob } = await import("./glob.js");
+    const { expandGlob } = await import("./glob-match.js");
     const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       writeFileSync(join(tmp, "a.md"), "");
@@ -98,7 +98,7 @@ describe("expandGlob depth handling", () => {
       await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { expandGlob } = await import("./glob.js");
+    const { expandGlob } = await import("./glob-match.js");
     const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       mkdirSync(join(tmp, "a", "nested"), { recursive: true });
@@ -116,7 +116,7 @@ describe("expandGlob depth handling", () => {
       await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { expandGlob } = await import("./glob.js");
+    const { expandGlob } = await import("./glob-match.js");
     const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       mkdirSync(join(tmp, "deep", "nest"), { recursive: true });
@@ -135,7 +135,7 @@ describe("expandGlob symlink handling", () => {
       await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { expandGlob } = await import("./glob.js");
+    const { expandGlob } = await import("./glob-match.js");
     const tmp = mkdtempSync(join(tmpdir(), "yome-glob-"));
     try {
       writeFileSync(join(tmp, "real.md"), "");

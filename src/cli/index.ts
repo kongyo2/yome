@@ -3,9 +3,7 @@ import {
   InvalidArgumentError,
   Option as CommanderOption,
 } from "commander";
-import { createInterface } from "node:readline";
 import pc from "picocolors";
-import open from "open";
 import {
   exists as backupExists,
   load as backupLoad,
@@ -14,47 +12,35 @@ import {
 import { logger, setup as setupLogfile } from "../logfile/index.js";
 import { DefaultGroup, resolveGroupName } from "../server/group.js";
 import { Version, Revision, Name } from "../version.js";
-import {
-  PROBE_TIMEOUT_DEFAULT,
-  PROBE_TIMEOUT_FAST,
-  probeServer,
-  waitForReady,
-  waitForServerDown,
-} from "./probe.js";
 import { isStdinRedirected, readStdin } from "./stdin.js";
 import { resolveArgs, resolveUnwatchArgs } from "./args.js";
 import {
   buildDeeplink,
   deeplinkDisplayNames,
   displayNames,
+  writeJson,
   type DeeplinkEntry,
 } from "./display.js";
-import {
-  readRestoreFile,
-  startServer,
-  writeRestoreFile,
-} from "./server-runner.js";
-import { spawnDetached } from "./background.js";
-import {
-  filterValidRestoreData,
-  isLoopbackBind,
-  mapFromRecord,
-  mergeGroups,
-} from "./helpers.js";
-import {
-  doClose,
-  doRestart,
-  doShutdown,
-  doStatus,
-  doUnwatch,
-  fetchRegisteredPatterns,
-  postFiles,
-  postPatterns,
-  postUploadedFile,
-  shutdownOrRestartAll,
-  writeJson,
-} from "./client.js";
+import { readRestoreFile, writeRestoreFile } from "../common/restore.js";
 import type { RestoreData } from "../backup/index.js";
+
+// Modules that pull expensive-to-compile node builtins (node:http,
+// node:child_process, node:net, node:readline) or the server subtree are
+// loaded on demand. Node compiles builtin modules lazily, and keeping them
+// out of the static import graph cuts tens of milliseconds from every CLI
+// invocation that does not need them.
+let probeModP: Promise<typeof import("./probe.js")> | null = null;
+const probeMod = () => (probeModP ??= import("./probe.js"));
+let clientModP: Promise<typeof import("./client.js")> | null = null;
+const clientMod = () => (clientModP ??= import("./client.js"));
+let helpersModP: Promise<typeof import("./helpers.js")> | null = null;
+const helpersMod = () => (helpersModP ??= import("./helpers.js"));
+let backgroundModP: Promise<typeof import("./background.js")> | null = null;
+const backgroundMod = () => (backgroundModP ??= import("./background.js"));
+let serverRunnerModP: Promise<typeof import("./server-runner.js")> | null =
+  null;
+const serverRunnerMod = () =>
+  (serverRunnerModP ??= import("./server-runner.js"));
 
 const DEFAULT_PORT = 6275;
 
@@ -85,6 +71,7 @@ async function promptYesNo(
   message: string,
   emptyAsYes = false,
 ): Promise<boolean> {
+  const { createInterface } = await import("node:readline");
   process.stderr.write(message);
   return await new Promise<boolean>((resolve) => {
     const rl = createInterface({
@@ -141,6 +128,10 @@ function emitServeOutput(
 }
 
 async function runMain(args: string[], flags: Flags): Promise<number> {
+  // Runs that will host the server in-process are known up front; warm the
+  // server chunk in parallel with the argument/probe work below.
+  if (flags.foreground || flags.restore !== "") void serverRunnerMod();
+
   // setup log file unless we're in foreground+restore-less mode (we still want logs for actual server runs)
   if (!flags.foreground || flags.restore !== "") {
     try {
@@ -159,6 +150,8 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     : `${bind}:${flags.port}`;
 
   if (flags.clear) {
+    const { probeServer, waitForReady, waitForServerDown, PROBE_TIMEOUT_FAST } =
+      await probeMod();
     let wasServerRunning = false;
     try {
       await probeServer(addr, PROBE_TIMEOUT_FAST);
@@ -182,6 +175,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       }
     }
     if (wasServerRunning) {
+      const { doShutdown } = await clientMod();
       await doShutdown(addr);
       await waitForServerDown(addr);
     }
@@ -190,6 +184,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     // (e.g. the session changed within the 1s debounce window).
     await backupRemove(flags.port);
     if (wasServerRunning) {
+      const { spawnDetached } = await backgroundMod();
       const proc = spawnDetached({
         bind,
         host: bind,
@@ -217,10 +212,12 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   }
 
   if (flags.status) {
+    const { doStatus } = await clientMod();
     return await doStatus(flags.json);
   }
 
   if (flags.shutdown) {
+    const { doShutdown, shutdownOrRestartAll } = await clientMod();
     if (!flags.portExplicit) {
       return await shutdownOrRestartAll("shutdown");
     }
@@ -229,6 +226,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   }
 
   if (flags.restart) {
+    const { doRestart, shutdownOrRestartAll } = await clientMod();
     if (!flags.portExplicit) {
       return await shutdownOrRestartAll("restart");
     }
@@ -247,6 +245,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       throw new Error(
         `invalid target group name "${flags.target}": ${error.message}`,
       );
+    const { doUnwatch, fetchRegisteredPatterns } = await clientMod();
     const patterns = await resolveUnwatchArgs(args, flags.recursive, () =>
       fetchRegisteredPatterns(addr, resolvedTarget),
     );
@@ -263,6 +262,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       throw new Error(
         `invalid target group name "${flags.target}": ${error.message}`,
       );
+    const { doClose } = await clientMod();
     const { closed, errors } = await doClose(addr, args, resolvedTarget);
     if (closed.length > 0) {
       const names = displayNames(closed);
@@ -280,6 +280,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
 
   if (flags.restore !== "") {
     const rd = await readRestoreFile(flags.restore);
+    const { mapFromRecord } = await helpersMod();
     return await runStartServer(
       flags,
       addr,
@@ -331,6 +332,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   // No files / patterns / stdin: if server running, just open browser.
   if (files.length === 0 && patterns.length === 0 && !stdinData) {
     try {
+      const { probeServer, PROBE_TIMEOUT_DEFAULT } = await probeMod();
       await probeServer(addr, PROBE_TIMEOUT_DEFAULT);
       await openBrowser(addr, flags);
       return 0;
@@ -344,6 +346,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   // API calls must surface so users actually see "binary file rejected"
   // type problems instead of silently spawning a fresh server.
   if (stdinData || files.length > 0 || patterns.length > 0) {
+    const { probeServer, PROBE_TIMEOUT_FAST } = await probeMod();
     let probed: Awaited<ReturnType<typeof probeServer>> | null = null;
     try {
       probed = await probeServer(addr, PROBE_TIMEOUT_FAST);
@@ -354,6 +357,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
       const isNewGroup = !probed.groups.includes(flags.target);
       const deeplinks: DeeplinkEntry[] = [];
 
+      const { postFiles, postPatterns, postUploadedFile } = await clientMod();
       const pf = await postFiles(addr, flags.target, files);
       deeplinks.push(...pf.entries);
       const pp = await postPatterns(addr, flags.target, patterns);
@@ -417,6 +421,9 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
   let mergedPatterns = patternsByGroup;
   let uploadedFiles: Array<{ name: string; content: string; group: string }> =
     [];
+
+  const { filterValidRestoreData, isLoopbackBind, mergeGroups } =
+    await helpersMod();
 
   if (flags.restoreSession) {
     try {
@@ -511,6 +518,10 @@ async function openBrowser(addr: string, flags: Flags): Promise<void> {
       ? `http://${addr}`
       : `http://${addr}/${encodeURIComponent(flags.target)}`;
   try {
+    // `open` is loaded lazily: it (and its platform helpers) are only needed
+    // when a browser is actually opened, and keeping it out of the static
+    // import graph shaves measurable time off every CLI invocation.
+    const { default: open } = await import("open");
     await open(url);
   } catch (err) {
     logger.warn("could not open browser", { error: String(err) });
@@ -525,6 +536,10 @@ async function runStartServer(
   patternsByGroup: Map<string, string[]>,
   uploadedFiles: Array<{ name: string; content: string; group: string }>,
 ): Promise<number> {
+  // The in-process server (and its chokidar/http dependency subtree) is only
+  // required for --foreground / --restore runs; client invocations that talk
+  // to an already-running server never pay for loading it.
+  const { startServer } = await serverRunnerMod();
   const result = await startServer({
     addr,
     host: bind,
@@ -540,6 +555,7 @@ async function runStartServer(
     },
   });
   if (result.restartRequested) {
+    const { spawnDetached } = await backgroundMod();
     spawnDetached({
       bind,
       host: bind,
@@ -568,6 +584,10 @@ async function startBackground(
   };
   const restoreFile = await writeRestoreFile(restoreData);
   try {
+    const [{ spawnDetached }, { waitForReady }] = await Promise.all([
+      backgroundMod(),
+      probeMod(),
+    ]);
     const proc = spawnDetached({
       bind,
       host: bind,

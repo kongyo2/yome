@@ -1,7 +1,6 @@
 import { realpathSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join, sep, isAbsolute } from "node:path";
-import picomatch from "picomatch";
+import { join, sep } from "node:path";
 
 const GLOB_CHARS = /[*?[\]]/;
 export function hasGlobChars(s: string): boolean {
@@ -37,92 +36,6 @@ export function toSlash(p: string): string {
   return p.split(sep).join("/");
 }
 
-// Compiled matchers are cached because matchPattern runs for every watcher
-// event against every registered pattern.
-const matcherCache = new Map<string, (p: string) => boolean>();
-
-// matchPattern returns true if absPath matches absPattern using doublestar semantics.
-export function matchPattern(absPattern: string, absPath: string): boolean {
-  const key = toSlash(absPattern);
-  let matcher = matcherCache.get(key);
-  if (!matcher) {
-    matcher = picomatch(key, { dot: false, nocase: false });
-    matcherCache.set(key, matcher);
-  }
-  return matcher(toSlash(absPath));
-}
-
-interface GlobOptions {
-  filesOnly?: boolean;
-}
-
-// expandGlob expands a pattern relative to base and returns matching paths.
-export async function expandGlob(
-  base: string,
-  rel: string,
-  opts: GlobOptions = {},
-): Promise<string[]> {
-  const filesOnly = opts.filesOnly ?? true;
-  if (!isAbsolute(base)) {
-    throw new Error(`base must be absolute: ${base}`);
-  }
-
-  const isRecursive = rel.includes("**");
-  const matcher = picomatch(rel, { dot: false, nocase: false });
-  // For non-recursive patterns the maximum directory depth that can still
-  // produce a match is (number of '/' in pattern). e.g. "*.md" → 0, so we
-  // never descend; "a/*.md" → 1, so we descend exactly one level.
-  const maxDirDepth = isRecursive ? Infinity : rel.split("/").length - 1;
-
-  const results: string[] = [];
-
-  async function walk(
-    dir: string,
-    relDir: string,
-    depth: number,
-  ): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const childRel = relDir === "" ? e.name : `${relDir}/${e.name}`;
-      const childAbs = join(dir, e.name);
-      if (e.isDirectory()) {
-        if (depth < maxDirDepth) {
-          await walk(childAbs, childRel, depth + 1);
-        }
-        if (!filesOnly && matcher(childRel)) {
-          results.push(childAbs);
-        }
-      } else {
-        let isFile = e.isFile();
-        // A symlink only counts as a file if its target is a regular file;
-        // a symlink to a directory must not appear in file matches.
-        if (e.isSymbolicLink()) {
-          try {
-            isFile = (await stat(childAbs)).isFile();
-          } catch {
-            isFile = false;
-          }
-        }
-        if (isFile && matcher(childRel)) {
-          results.push(childAbs);
-        }
-      }
-    }
-  }
-
-  try {
-    await walk(base, "", 0);
-  } catch {
-    // ignore
-  }
-  return results;
-}
-
 export function resolvePathAlias(orig: string): string {
   try {
     const canonical = realpathSync(orig);
@@ -139,23 +52,97 @@ export function sortPathsNatural(paths: string[]): void {
   paths.sort((a, b) => collator.compare(a, b));
 }
 
+// The walkers below preserve the exact visit order of a sequential
+// depth-first traversal (siblings in readdir order, a directory's subtree
+// before the next sibling) while running the underlying directory reads
+// concurrently: each entry gets an ordered slot, subtree reads run in
+// parallel, and results are stitched together in slot order. Only symlinks
+// need a stat() call — dirent type info covers regular files/directories —
+// which alone removes one syscall per file compared to the previous
+// sequential implementation.
+
+async function collectDirs(dir: string): Promise<string[]> {
+  const out: string[] = [dir];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  const parts: Array<string[] | undefined> = new Array(entries.length);
+  const tasks: Array<Promise<void>> = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (!e || !e.isDirectory()) continue;
+    const slot = i;
+    tasks.push(
+      collectDirs(join(dir, e.name)).then((r) => {
+        parts[slot] = r;
+      }),
+    );
+  }
+  if (tasks.length > 0) await Promise.all(tasks);
+  for (const p of parts) {
+    if (p !== undefined) out.push(...p);
+  }
+  return out;
+}
+
 // Walk a directory tree, calling fn(absPath) for each directory.
 export async function walkDirs(
   baseDir: string,
   fn: (path: string) => void,
 ): Promise<void> {
-  fn(baseDir);
+  const dirs = await collectDirs(baseDir);
+  for (const d of dirs) fn(d);
+}
+
+async function collectFiles(dir: string): Promise<string[]> {
   let entries;
   try {
-    entries = await readdir(baseDir, { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return;
+    return [];
   }
-  for (const e of entries) {
+  const parts: Array<string[] | string | undefined> = new Array(entries.length);
+  const tasks: Array<Promise<void>> = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (!e) continue;
+    const abs = join(dir, e.name);
     if (e.isDirectory()) {
-      await walkDirs(join(baseDir, e.name), fn);
+      const slot = i;
+      tasks.push(
+        collectFiles(abs).then((r) => {
+          parts[slot] = r;
+        }),
+      );
+    } else if (e.isFile()) {
+      parts[i] = abs;
+    } else if (e.isSymbolicLink()) {
+      // A symlink only counts as a file if its target is a regular file;
+      // a symlink to a directory must not be descended into or reported.
+      const slot = i;
+      tasks.push(
+        stat(abs).then(
+          (st) => {
+            if (st.isFile()) parts[slot] = abs;
+          },
+          () => {
+            // dangling symlink — ignore
+          },
+        ),
+      );
     }
   }
+  if (tasks.length > 0) await Promise.all(tasks);
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p === undefined) continue;
+    if (typeof p === "string") out.push(p);
+    else out.push(...p);
+  }
+  return out;
 }
 
 // Walk all files in a directory (recursively).
@@ -163,23 +150,6 @@ export async function walkFiles(
   baseDir: string,
   fn: (path: string) => void,
 ): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(baseDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    const abs = join(baseDir, e.name);
-    if (e.isDirectory()) {
-      await walkFiles(abs, fn);
-    } else if (e.isFile() || e.isSymbolicLink()) {
-      try {
-        const st = await stat(abs);
-        if (st.isFile()) fn(abs);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  const files = await collectFiles(baseDir);
+  for (const f of files) fn(f);
 }

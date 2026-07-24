@@ -1,7 +1,6 @@
 import { isAbsolute, join, resolve as pathResolve, sep } from "node:path";
 import { statSync } from "node:fs";
 import {
-  expandGlob,
   hasGlobChars,
   splitPattern,
   toSlash,
@@ -22,6 +21,9 @@ export function toAbsolute(p: string): string {
 export async function expandGlobAbsolute(
   absPattern: string,
 ): Promise<string[]> {
+  // Loaded on demand: pulls in picomatch, which plain-file invocations
+  // (the overwhelmingly common case) never need.
+  const { expandGlob } = await import("../common/glob-match.js");
   const { base, rel } = splitPattern(toSlash(absPattern));
   const matches = await expandGlob(base, rel, { filesOnly: true });
   sortPathsNatural(matches);

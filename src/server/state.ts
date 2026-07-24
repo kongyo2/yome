@@ -23,9 +23,7 @@ import {
   HEAD_FILE_SIZE_LIMIT,
 } from "./title.js";
 import {
-  expandGlob,
   isRecursivePattern,
-  matchPattern,
   resolvePathAlias,
   splitPattern,
   sortPathsNatural,
@@ -33,6 +31,7 @@ import {
   walkDirs,
   walkFiles,
 } from "../common/glob.js";
+import { expandGlob, matchPattern } from "../common/glob-match.js";
 
 const DEFAULT_DEBOUNCE_MS = 200;
 const BACKUP_DEBOUNCE_MS = 1000;
@@ -396,6 +395,15 @@ export class State {
       name: g.name,
       files: [...g.files],
     }));
+  }
+
+  // snapshotGroup returns a copy of a single group without materializing
+  // every other group the way listGroups() does (search hits this per
+  // keystroke).
+  snapshotGroup(groupName: string): Group | null {
+    const g = this.groups.get(groupName);
+    if (!g) return null;
+    return { name: g.name, files: [...g.files] };
   }
 
   findFile(id: string, groupName: string): FileEntry | null {

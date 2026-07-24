@@ -4,7 +4,6 @@ import { save as saveBackup } from "../backup/index.js";
 import { buildDeeplink, type DeeplinkEntry } from "./display.js";
 import { logger } from "../logfile/index.js";
 import { DefaultGroup } from "../server/group.js";
-import open from "open";
 
 export { readRestoreFile, writeRestoreFile } from "../common/restore.js";
 
@@ -144,9 +143,11 @@ export async function startServer(
           opts.target === DefaultGroup
             ? `http://${opts.addr}`
             : `http://${opts.addr}/${encodeURIComponent(opts.target)}`;
-        open(url).catch((err) =>
-          logger.warn("could not open browser", { error: String(err) }),
-        );
+        import("open")
+          .then(({ default: open }) => open(url))
+          .catch((err) =>
+            logger.warn("could not open browser", { error: String(err) }),
+          );
       }
     });
   });

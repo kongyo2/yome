@@ -336,45 +336,61 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       contextLines = Math.min(5, Math.floor(n));
     }
 
-    const groups = state.listGroups();
-    const target = groups.find((g) => g.name === group);
+    const target = state.snapshotGroup(group);
     if (!target) return textResponse(res, 404, "group not found");
 
     const needle = q.toLowerCase();
     const results: SearchResult[] = [];
     let total = 0;
     let remaining = limit;
-    for (const entry of target.files) {
-      if (remaining === 0) break;
-      let content: string;
-      try {
-        content = await readSearchableContent(entry);
-      } catch (err) {
-        logger.warn("failed to read file for search", {
-          id: entry.id,
-          path: entry.path,
-          error: String(err),
-        });
-        continue;
-      }
-      const matches = findSearchMatches(
-        content,
-        needle,
-        contextLines,
-        remaining,
+    // Read file contents in small parallel batches (matching stays strictly
+    // in group order, and no further batch is scheduled once the limit is
+    // reached), instead of one await per file.
+    const READ_BATCH = 8;
+    for (
+      let start = 0;
+      start < target.files.length && remaining > 0;
+      start += READ_BATCH
+    ) {
+      const batch = target.files.slice(start, start + READ_BATCH);
+      const contents = await Promise.all(
+        batch.map(async (entry) => {
+          try {
+            return await readSearchableContent(entry);
+          } catch (err) {
+            logger.warn("failed to read file for search", {
+              id: entry.id,
+              path: entry.path,
+              error: String(err),
+            });
+            return null;
+          }
+        }),
       );
-      if (matches.length === 0) continue;
-      const r: SearchResult = {
-        fileId: entry.id,
-        fileName: entry.name,
-        path: entry.path,
-        uploaded: entry.uploaded === true,
-        matches,
-      };
-      if (entry.title) r.title = entry.title;
-      results.push(r);
-      total += matches.length;
-      remaining -= matches.length;
+      for (let i = 0; i < batch.length; i++) {
+        if (remaining === 0) break;
+        const entry = batch[i];
+        const content = contents[i];
+        if (!entry || content == null) continue;
+        const matches = findSearchMatches(
+          content,
+          needle,
+          contextLines,
+          remaining,
+        );
+        if (matches.length === 0) continue;
+        const r: SearchResult = {
+          fileId: entry.id,
+          fileName: entry.name,
+          path: entry.path,
+          uploaded: entry.uploaded === true,
+          matches,
+        };
+        if (entry.title) r.title = entry.title;
+        results.push(r);
+        total += matches.length;
+        remaining -= matches.length;
+      }
     }
     jsonResponse(res, 200, {
       query: q,

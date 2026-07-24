@@ -1,7 +1,6 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 
 export interface UploadedFileData {
   name: string;
@@ -18,6 +17,9 @@ export interface RestoreData {
 // writeRestoreFile persists a state snapshot to a private temp file used to
 // hand session state to a freshly spawned server process (restart flow).
 export async function writeRestoreFile(data: RestoreData): Promise<string> {
+  // Lazy: node:crypto is not needed on CLI paths that never write a restore
+  // file, and Node compiles the builtin only when first imported.
+  const { randomBytes } = await import("node:crypto");
   const p = join(
     tmpdir(),
     `yome-restore-${randomBytes(8).toString("hex")}.json`,

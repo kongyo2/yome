@@ -6,6 +6,12 @@ export interface DeeplinkEntry {
   name?: string;
 }
 
+// Lives here (not in client.ts) so JSON-mode output does not drag the
+// HTTP client — and with it node:http — into the CLI's startup path.
+export function writeJson(value: unknown): void {
+  process.stdout.write(JSON.stringify(value, null, 2) + "\n");
+}
+
 export function buildDeeplink(
   addr: string,
   groupName: string,

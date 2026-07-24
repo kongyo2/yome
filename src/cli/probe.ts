@@ -1,5 +1,18 @@
-import http, { type IncomingMessage } from "node:http";
-import { request as httpRequest } from "node:http";
+import { createRequire } from "node:module";
+import type { IncomingMessage } from "node:http";
+
+// Load node:http through require() instead of an ESM import: building the
+// builtin's ESM module facade force-evaluates its lazy fetch/WebSocket
+// getters, which drags undici in and costs ~60ms of extra startup on every
+// CLI invocation that talks to a server. require() keeps those getters
+// lazy. On top of that, the require itself is deferred until a request is
+// actually made — commands that end up making no HTTP call (e.g. --status
+// with no servers) never compile the builtin at all.
+const requireBuiltin = createRequire(import.meta.url);
+let httpMod: typeof import("node:http") | null = null;
+function getHttp(): typeof import("node:http") {
+  return (httpMod ??= requireBuiltin("node:http"));
+}
 
 export interface ProbeStatus {
   version: string;
@@ -39,7 +52,7 @@ export async function probeServer(
 
 export function httpGetJson<T>(url: string, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const req = http.get(
+    const req = getHttp().get(
       url,
       // agent:false → one fresh connection per request (Connection: close).
       // Node ≥19 pools keep-alive sockets by default, and a pooled socket
@@ -90,7 +103,7 @@ export function httpRequestJson(
     // but URL#hostname returns "[::1]". Strip the brackets so requests to
     // http://[::1]:.../ work without ENOTFOUND.
     const hostname = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
-    const req = httpRequest(
+    const req = getHttp().request(
       {
         hostname,
         port: parsed.port,
@@ -128,7 +141,7 @@ export async function waitForServerDown(
   addr: string,
   totalTimeoutMs = 5000,
 ): Promise<void> {
-  const interval = 100;
+  const interval = 50;
   const deadline = Date.now() + totalTimeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -164,7 +177,9 @@ export async function waitForReady(
     } catch (err) {
       lastErr = err as Error;
     }
-    await new Promise((r) => setTimeout(r, 50));
+    // Startup readiness is on the interactive path (`yome file.md` blocks on
+    // it when spawning the server); a tight poll shaves real latency.
+    await new Promise((r) => setTimeout(r, 15));
   }
   if (lastErr)
     throw new Error(

@@ -1,4 +1,5 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -50,8 +51,81 @@ function mimeForFile(path: string): string {
   return MIME_TYPES[ext] ?? "application/octet-stream";
 }
 
+// The SPA's files are immutable for the lifetime of a server process (dist
+// is replaced only by reinstalling/rebuilding, which comes with a restart),
+// so each one is read once and then served straight from memory: no stat,
+// no open, no stream per request. Vite emits content-hashed filenames under
+// /assets/, which additionally makes them safe to cache in the browser
+// forever; everything else (index.html, favicon) revalidates via ETag.
+interface CachedAsset {
+  buf: Buffer;
+  mime: string;
+  etag: string;
+  immutable: boolean;
+}
+
+const ASSET_CACHE_MAX_FILE = 8 * 1024 * 1024;
+const ASSET_CACHE_MAX_TOTAL = 64 * 1024 * 1024;
+const assetCache = new Map<string, CachedAsset>();
+let assetCacheBytes = 0;
+
+function loadAsset(absPath: string): CachedAsset | null {
+  const cached = assetCache.get(absPath);
+  if (cached) return cached;
+  let st;
+  try {
+    st = statSync(absPath);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return null;
+  let buf: Buffer;
+  try {
+    buf = readFileSync(absPath);
+  } catch {
+    return null;
+  }
+  const asset: CachedAsset = {
+    buf,
+    mime: mimeForFile(absPath),
+    etag: `"${createHash("sha1").update(buf).digest("base64url")}"`,
+    immutable: absPath.startsWith(join(FRONTEND_DIR, "assets") + sep),
+  };
+  if (
+    buf.length <= ASSET_CACHE_MAX_FILE &&
+    assetCacheBytes + buf.length <= ASSET_CACHE_MAX_TOTAL
+  ) {
+    assetCache.set(absPath, asset);
+    assetCacheBytes += buf.length;
+  }
+  return asset;
+}
+
+function sendAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  asset: CachedAsset,
+): void {
+  res.setHeader("Content-Type", asset.mime);
+  res.setHeader("ETag", asset.etag);
+  res.setHeader(
+    "Cache-Control",
+    asset.immutable ? "public, max-age=31536000, immutable" : "no-cache",
+  );
+  if (req.headers["if-none-match"] === asset.etag) {
+    res.statusCode = 304;
+    res.end();
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader("Content-Length", String(asset.buf.length));
+  res.end(asset.buf);
+}
+
 export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
-  let urlPath = (req.url ?? "/").split("?")[0] ?? "/";
+  const rawUrl = req.url ?? "/";
+  const qIdx = rawUrl.indexOf("?");
+  let urlPath = qIdx === -1 ? rawUrl : rawUrl.substring(0, qIdx);
   if (urlPath === "/") urlPath = "/index.html";
   let decoded: string;
   try {
@@ -75,18 +149,19 @@ export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  try {
-    const st = statSync(requested);
-    if (st.isFile()) {
-      sendFile(res, requested);
-      return;
-    }
-  } catch {
-    // fall through to SPA fallback
+  const asset = loadAsset(requested);
+  if (asset) {
+    sendAsset(req, res, asset);
+    return;
   }
 
-  const fallback = join(FRONTEND_DIR, "index.html");
-  sendFile(res, fallback);
+  const fallback = loadAsset(join(FRONTEND_DIR, "index.html"));
+  if (fallback) {
+    sendAsset(req, res, fallback);
+    return;
+  }
+  res.statusCode = 404;
+  res.end("not found");
 }
 
 export function sendFile(res: ServerResponse, path: string): void {
