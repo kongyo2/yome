@@ -1,7 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { stateHome } from "../xdg/index.js";
 import type { RestoreData } from "../common/restore.js";
 
@@ -20,6 +19,9 @@ export async function save(port: number, data: RestoreData): Promise<void> {
   const dir = dirname(p);
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
+  // node:crypto is compiled lazily by Node and is only needed when a backup
+  // is actually written; loading it here keeps it off the CLI startup path.
+  const { randomBytes } = await import("node:crypto");
   const json = JSON.stringify(data);
   const tmpName = join(
     dir,

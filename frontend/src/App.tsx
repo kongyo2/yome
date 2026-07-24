@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Sidebar } from "./components/Sidebar";
 import { MarkdownViewer } from "./components/MarkdownViewer";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -10,7 +18,11 @@ import { SearchToggle } from "./components/SearchToggle";
 import { TitleToggle } from "./components/TitleToggle";
 import { RestartButton } from "./components/RestartButton";
 import { DropOverlay } from "./components/DropOverlay";
-import { ZoomModal } from "./components/ZoomModal";
+// react-zoom-pan-pinch is only needed once the user actually zooms an image
+// or diagram; loading the modal lazily keeps it out of the initial bundle.
+const ZoomModal = lazy(() =>
+  import("./components/ZoomModal").then((m) => ({ default: m.ZoomModal })),
+);
 import type { ZoomContent } from "./components/ZoomModal";
 import { TocPanel } from "./components/TocPanel";
 import type { TocHeading } from "./components/TocPanel";
@@ -42,6 +54,7 @@ import {
 } from "./utils/groups";
 import { isMarkdownFile } from "./utils/filetype";
 import { formatFileLabel } from "./utils/fileLabel";
+import { prefetchRenderers } from "./utils/lazy-render";
 
 const VIEWMODE_STORAGE_KEY = "yome-sidebar-viewmode";
 const WIDTH_STORAGE_KEY = "yome-layout-width";
@@ -101,6 +114,8 @@ export function isTocOpenForFile(
 
 export function App() {
   const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
+  const [firstContentRendered, setFirstContentRendered] = useState(false);
   const [activeGroup, setActiveGroup] = useState<string>(
     () => parseGroupFromPath(window.location.pathname) || "default",
   );
@@ -231,6 +246,7 @@ export function App() {
       knownFileIds.current = newIds;
 
       setGroups(data);
+      setGroupsLoaded(true);
 
       if (added.length > 0 && !wasEmpty) {
         // Only auto-select if the new file belongs to the current active group
@@ -267,6 +283,21 @@ export function App() {
     if (relativeOpen.current != null) return;
     loadGroups();
   }, [loadGroups]);
+
+  // Warm the heavyweight renderers (shiki, mermaid, katex, rehype-raw) once
+  // the first document has rendered (or the session has no files at all).
+  // They are no longer part of the initial bundle, and prefetching must not
+  // compete with the critical path — downloading/evaluating them earlier
+  // measurably delays the first content paint. Note: "no file selected yet"
+  // is not enough (selection lands a frame after groups do); only a truly
+  // file-less session skips the render-first condition.
+  const prefetchReady =
+    firstContentRendered ||
+    (groupsLoaded && groups.every((g) => g.files.length === 0));
+  useEffect(() => {
+    if (!prefetchReady) return;
+    return prefetchRenderers();
+  }, [prefetchReady]);
 
   useEffect(() => {
     if (relativeOpenStarted.current) return;
@@ -548,6 +579,11 @@ export function App() {
     activeFileId,
   );
 
+  const handleViewerContentRendered = useCallback(() => {
+    setFirstContentRendered(true);
+    onContentRendered();
+  }, [onContentRendered]);
+
   const handleHeadingClick = useCallback((id: string) => {
     const el = document.getElementById(id);
     const reduced = window.matchMedia(
@@ -650,7 +686,7 @@ export function App() {
                 revision={contentRevision}
                 onFileOpened={handleFileOpened}
                 onHeadingsChange={setHeadings}
-                onContentRendered={onContentRendered}
+                onContentRendered={handleViewerContentRendered}
                 isTocOpen={tocOpen}
                 onTocToggle={() => setTocOpen(!tocOpen)}
                 onRemoveFile={handleRemoveFile}
@@ -680,7 +716,9 @@ export function App() {
       <RestartButton />
       {isDragging && <DropOverlay />}
       {zoomContent && (
-        <ZoomModal content={zoomContent} onClose={handleZoomClose} />
+        <Suspense fallback={null}>
+          <ZoomModal content={zoomContent} onClose={handleZoomClose} />
+        </Suspense>
       )}
     </div>
   );

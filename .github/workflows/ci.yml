@@ -44,7 +44,7 @@ jobs:
         run: cd frontend && npx vite build
 
       - name: Build server
-        run: npx tsc -p tsconfig.build.json && node scripts/post-build.mjs
+        run: npm run build:server
 
       - name: Server tests
         run: npx vitest run

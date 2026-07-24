@@ -1,12 +1,15 @@
-import http, {
-  type IncomingMessage,
-  type ServerResponse,
-  type Server,
-} from "node:http";
+import { createRequire } from "node:module";
+import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import { Router } from "./router.js";
 import { buildHandlers } from "./handlers.js";
 import { serveSpa } from "./static.js";
 import type { State } from "./state.js";
+
+// require() rather than ESM-import node:http: materializing the builtin's
+// module facade force-loads undici via its lazy fetch/WebSocket getters and
+// adds ~60ms to server startup. require() leaves those getters untouched.
+const requireBuiltin = createRequire(import.meta.url);
+const http: typeof import("node:http") = requireBuiltin("node:http");
 
 const CSP =
   "default-src 'self'; " +
@@ -71,7 +74,8 @@ export function createServer(state: State): Server {
       res.setHeader("Content-Security-Policy", CSP);
 
       const url = req.url ?? "/";
-      const path = url.split("?")[0] ?? "/";
+      const qIdx = url.indexOf("?");
+      const path = qIdx === -1 ? url : url.substring(0, qIdx);
       const method = req.method ?? "GET";
 
       if (path.startsWith("/_/")) {

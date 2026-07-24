@@ -12,12 +12,15 @@ import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
-import rehypeKatex from "rehype-katex";
 import { rehypeGithubAlerts } from "rehype-github-alerts";
 // oxlint-disable-next-line import/no-unassigned-import
 import "katex/dist/katex.min.css";
-import { codeToHtml } from "shiki";
-import mermaid from "mermaid";
+import {
+  highlight,
+  highlightCached,
+  katexMod,
+  mermaidMod,
+} from "../utils/lazy-render";
 import { fetchFileContent, openRelativeFile } from "../hooks/useApi";
 import { isPlainLeftClick } from "../utils/linkClick";
 import { escapeRegExp } from "../utils/regex";
@@ -76,6 +79,12 @@ const sanitizeSchema = {
     div: [...(defaultSchema.attributes?.["div"] || []), "style", "align"],
   },
 };
+
+type KatexPlugin = (typeof import("rehype-katex"))["default"];
+// Shared across viewer instances: once rehype-katex has loaded, later math
+// documents render synchronously on first paint just like the old static
+// import did.
+let katexPluginCache: KatexPlugin | null = null;
 
 interface MarkdownViewerProps {
   fileId: string;
@@ -194,7 +203,11 @@ function cleanupMermaidErrors() {
   document.querySelectorAll("[id^='dmermaid-']").forEach((el) => el.remove());
 }
 
-async function renderMermaid(code: string, width?: number): Promise<string> {
+async function renderMermaid(
+  code: string,
+  theme: "dark" | "default",
+  width?: number,
+): Promise<string> {
   let resolve: (svg: string) => void;
   let reject: (err: unknown) => void;
   const result = new Promise<string>((res, rej) => {
@@ -211,6 +224,10 @@ async function renderMermaid(code: string, width?: number): Promise<string> {
     container.style.width = `${width && width > 0 ? width : 800}px`;
     document.body.appendChild(container);
     try {
+      // mermaid is loaded on first use; initialize() runs inside the queue
+      // so each queued render still sees the theme it was requested with.
+      const mermaid = (await mermaidMod()).default;
+      mermaid.initialize({ startOnLoad: false, theme });
       const { svg } = await mermaid.render(id, code, container);
       resolve!(svg);
       return undefined;
@@ -241,8 +258,7 @@ export function MermaidBlock({
 
     const doRender = () => {
       const width = containerRef.current?.offsetWidth;
-      mermaid.initialize({ startOnLoad: false, theme: getMermaidTheme() });
-      renderMermaid(code, width)
+      renderMermaid(code, getMermaidTheme(), width)
         .then((renderedSvg) => {
           if (!cancelled) setSvg(renderedSvg);
           return undefined;
@@ -506,22 +522,39 @@ function CodeBlockCopyButton({
   );
 }
 
-function CodeBlock({ language, code }: { language: string; code: string }) {
-  const [html, setHtml] = useState("");
+// Resolves highlighted HTML for the current code/language pair. The
+// returned HTML is guaranteed to belong to the *current* inputs: a reused
+// component instance whose props just changed falls back to the cache (or
+// the plain fallback) instead of flashing the previous block's output for a
+// frame. Cache hits paint synchronously; misses resolve via lazy shiki with
+// a plaintext fallback for unsupported languages.
+function useHighlightedHtml(code: string, language: string): string {
+  const [rendered, setRendered] = useState(() => ({
+    code,
+    language,
+    html: highlightCached(code, language) ?? "",
+  }));
 
   useEffect(() => {
     let cancelled = false;
-    codeToHtml(code, { lang: language, theme: "github-dark" })
+    const cached = highlightCached(code, language);
+    if (cached != null) {
+      setRendered({ code, language, html: cached });
+      return () => {
+        cancelled = true;
+      };
+    }
+    highlight(code, language)
       .then((result) => {
-        if (!cancelled) setHtml(result);
+        if (!cancelled) setRendered({ code, language, html: result });
         return undefined;
       })
       .catch(() => {
         // Fallback: if language not supported, try plaintext
         if (!cancelled) {
-          codeToHtml(code, { lang: "text", theme: "github-dark" })
+          highlight(code, "text")
             .then((result) => {
-              if (!cancelled) setHtml(result);
+              if (!cancelled) setRendered({ code, language, html: result });
               return undefined;
             })
             .catch(() => {});
@@ -531,6 +564,15 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
       cancelled = true;
     };
   }, [code, language]);
+
+  if (rendered.code === code && rendered.language === language) {
+    return rendered.html;
+  }
+  return highlightCached(code, language) ?? "";
+}
+
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const html = useHighlightedHtml(code, language);
 
   if (html) {
     return (
@@ -570,30 +612,7 @@ function HighlightedView({
   content: string;
   language: string;
 }) {
-  const [html, setHtml] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    setHtml("");
-    codeToHtml(content, { lang: language, theme: "github-dark" })
-      .then((result) => {
-        if (!cancelled) setHtml(result);
-        return undefined;
-      })
-      .catch(() => {
-        if (!cancelled) {
-          codeToHtml(content, { lang: "text", theme: "github-dark" })
-            .then((result) => {
-              if (!cancelled) setHtml(result);
-              return undefined;
-            })
-            .catch(() => {});
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [content, language]);
+  const html = useHighlightedHtml(content, language);
 
   if (html) {
     return (
@@ -842,6 +861,46 @@ export function MarkdownViewer({
   const isMarkdown = fileName === "" || isMarkdownFile(fileName);
   const codeLanguage = isMarkdown ? null : detectLanguage(fileName);
 
+  // rehype-katex (and the katex library under it) loads on demand.
+  // remark-math only produces math nodes for `$`-delimited input, which
+  // requires at least two `$` characters — documents below that threshold
+  // (including a lone shell-prompt `$`) render identically with the plugin
+  // omitted. Documents that may need it hold the loading state until the
+  // plugin is in (no flash of raw TeX).
+  const firstDollar = content.indexOf("$");
+  const needsMath =
+    isMarkdown &&
+    !isRawView &&
+    firstDollar !== -1 &&
+    content.indexOf("$", firstDollar + 1) !== -1;
+  const [katexPlugin, setKatexPlugin] = useState<KatexPlugin | null>(
+    katexPluginCache,
+  );
+  const [katexFailed, setKatexFailed] = useState(false);
+  useEffect(() => {
+    if (!needsMath || katexPlugin) return;
+    let cancelled = false;
+    katexMod()
+      .then((m) => {
+        katexPluginCache = m.default;
+        if (!cancelled) setKatexPlugin(() => m.default);
+        return undefined;
+      })
+      .catch(() => {
+        // Render without math support rather than hanging in Loading.
+        if (!cancelled) setKatexFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsMath, katexPlugin]);
+  const mathReady = !needsMath || katexPlugin != null || katexFailed;
+
+  // Treat "math plugin still loading" exactly like content loading so none
+  // of the render-completion side effects (scroll restore, ToC, markers)
+  // fire against an intermediate render missing the plugin.
+  const showLoading = loading || !mathReady;
+
   const parsed = useMemo(
     () => (isMarkdown && !isRawView ? parseFrontmatter(content) : null),
     [content, isRawView, isMarkdown],
@@ -853,6 +912,10 @@ export function MarkdownViewer({
     }
     if (isRawView) {
       return <RawView content={content} />;
+    }
+    if (needsMath && !katexPlugin && !katexFailed) {
+      // Math plugin still loading; showLoading covers this frame.
+      return null;
     }
     const base = parsed ? parsed.content : content;
     const md = fileName.toLowerCase().endsWith(".mdx")
@@ -869,7 +932,7 @@ export function MarkdownViewer({
             [rehypeSanitize, sanitizeSchema],
             rehypeGithubAlerts,
             rehypeSlug,
-            rehypeKatex,
+            ...(needsMath && katexPlugin ? [katexPlugin] : []),
           ]}
           components={components}
         >
@@ -885,6 +948,9 @@ export function MarkdownViewer({
     parsed,
     components,
     fileName,
+    needsMath,
+    katexPlugin,
+    katexFailed,
   ]);
 
   const prevHeadingsKey = useRef("");
@@ -917,13 +983,13 @@ export function MarkdownViewer({
   });
 
   useLayoutEffect(() => {
-    if (!loading) {
+    if (!showLoading) {
       onContentRenderedRef.current?.();
     }
-  }, [loading, renderedContent]);
+  }, [showLoading, renderedContent]);
 
   useLayoutEffect(() => {
-    if (loading || !scrollToHeading || !articleRef.current) {
+    if (showLoading || !scrollToHeading || !articleRef.current) {
       return;
     }
 
@@ -942,13 +1008,13 @@ export function MarkdownViewer({
     // Always consume the pending heading so it cannot scroll a file opened
     // later by coincidence of matching text.
     onScrolledToHeading?.();
-  }, [loading, renderedContent, scrollToHeading, onScrolledToHeading]);
+  }, [showLoading, renderedContent, scrollToHeading, onScrolledToHeading]);
 
   // Cross-file links may carry a fragment (api.md#auth). Once the target file
   // has rendered, scroll to the matching element id (rehype-slug ids for
   // headings, footnote ids, etc.).
   useLayoutEffect(() => {
-    if (loading || !scrollToAnchorId || !articleRef.current) {
+    if (showLoading || !scrollToAnchorId || !articleRef.current) {
       return;
     }
     let target = document.getElementById(scrollToAnchorId);
@@ -972,11 +1038,11 @@ export function MarkdownViewer({
     // Always consume the pending anchor so it cannot scroll a file rendered
     // later by coincidence of a matching id.
     onScrolledToAnchor?.();
-  }, [loading, renderedContent, scrollToAnchorId, onScrolledToAnchor]);
+  }, [showLoading, renderedContent, scrollToAnchorId, onScrolledToAnchor]);
 
   useLayoutEffect(() => {
     if (
-      loading ||
+      showLoading ||
       !articleRef.current ||
       !isMarkdown ||
       isRawView ||
@@ -1006,12 +1072,12 @@ export function MarkdownViewer({
     return () => {
       resizeObserver.disconnect();
     };
-  }, [loading, renderedContent, isMarkdown, isRawView, searchQuery]);
+  }, [showLoading, renderedContent, isMarkdown, isRawView, searchQuery]);
 
   useEffect(() => {
     const article = articleRef.current;
     const label = stickyLabelRef.current;
-    if (loading || !scrollContainer || !article || !label) {
+    if (showLoading || !scrollContainer || !article || !label) {
       setShowFullLabel(false);
       return;
     }
@@ -1046,9 +1112,16 @@ export function MarkdownViewer({
       window.removeEventListener("resize", schedule);
     };
     // isWide/fontSize/isTocOpen change the layout, so recompute on those too.
-  }, [loading, renderedContent, scrollContainer, isWide, fontSize, isTocOpen]);
+  }, [
+    showLoading,
+    renderedContent,
+    scrollContainer,
+    isWide,
+    fontSize,
+    isTocOpen,
+  ]);
 
-  if (loading) {
+  if (showLoading) {
     return (
       <div className="flex items-center justify-center h-50 text-gh-text-secondary text-sm">
         Loading...

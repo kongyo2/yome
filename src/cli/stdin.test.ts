@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { stdinName } from "./stdin.js";
+import { stdinName } from "./stdin-name.js";
 
 describe("stdinName", () => {
   it("returns deterministic name", () => {
