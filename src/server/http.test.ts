@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { once } from "node:events";
 import {
   mkdir,
   mkdtemp,
@@ -9,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AddressInfo } from "node:net";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { State } from "./state.js";
 import { createServer } from "./http.js";
 import { Version } from "../version.js";
@@ -413,6 +414,52 @@ describe("request body validation", () => {
     expect(res.status).toBe(413);
     expect(await res.text()).toContain("too large");
     expect(res.headers.get("connection")).toBe("close");
+    // The server keeps serving afterwards.
+    expect((await get("/_/api/version")).status).toBe(200);
+  });
+  it("keeps reading an oversized body after answering 413 so a client still uploading is not reset", async () => {
+    // Send most of an oversized body, wait for the 413, then send the tail:
+    // a client whose upload is still in flight when the server answers. The
+    // server has to consume that tail before closing the socket. Closing
+    // with unread bytes makes the kernel reset the connection, and the
+    // client can then lose the 413 behind an EPIPE / ECONNRESET.
+    const body = JSON.stringify({
+      name: "big.md",
+      content: "x".repeat(13 * 1024 * 1024),
+    });
+    const { port } = server.address() as AddressInfo;
+    const head =
+      "POST /_/api/groups/default/files/upload HTTP/1.1\r\n" +
+      `Host: 127.0.0.1:${port}\r\n` +
+      "Content-Type: application/json\r\n" +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
+    const serverSockets: Socket[] = [];
+    server.on("connection", (s) => serverSockets.push(s));
+    const client = connect({ port, host: "127.0.0.1", allowHalfOpen: true });
+    const errors: Error[] = [];
+    client.on("error", (err) => errors.push(err));
+    let received = "";
+    client.on("data", (chunk: Buffer) => {
+      received += chunk.toString("latin1");
+    });
+    await once(client, "connect");
+    const tail = 256 * 1024;
+    client.write(head + body.slice(0, body.length - tail));
+    await vi.waitFor(() => expect(received).toMatch(/^HTTP\/1\.1 413 /), {
+      timeout: 5000,
+      interval: 5,
+    });
+    client.write(body.slice(body.length - tail));
+    client.end();
+    await once(client, "close");
+    expect(errors).toEqual([]);
+    expect(received).toContain("too large");
+    expect(received.toLowerCase()).toContain("connection: close");
+    // The socket was closed only after the whole request had been read.
+    expect(serverSockets).toHaveLength(1);
+    expect(serverSockets[0].bytesRead).toBe(
+      Buffer.byteLength(head) + Buffer.byteLength(body),
+    );
     // The server keeps serving afterwards.
     expect((await get("/_/api/version")).status).toBe(200);
   });
