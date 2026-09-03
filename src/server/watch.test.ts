@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile, unlink } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { State } from "./state.js";
@@ -56,6 +56,32 @@ describe("file watcher integration", () => {
     }, 4000);
     const g = state.listGroups().find((x) => x.name === "default");
     expect(g?.files.some((f) => f.name === "new.md")).toBe(true);
+  });
+
+  it("keeps the entry and reports a change on an atomic save (write temp + rename)", async () => {
+    const path = join(tmp, "atomic.md");
+    await writeFile(path, "# Before");
+    state.addFile(path, "default");
+    const seen: string[] = [];
+    state.subscribe((e) => {
+      if (e.name === "file-changed") seen.push(e.data);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    // Editors like vim/VS Code replace the inode instead of writing in place.
+    const tmpPath = join(tmp, ".atomic.md.tmp");
+    await writeFile(tmpPath, "# After");
+    await rename(tmpPath, path);
+    await waitFor(() => seen.length > 0, 3000);
+    // Give a wrongly-detected deletion time to surface, then verify.
+    await new Promise((r) => setTimeout(r, 300));
+    const g = state.listGroups().find((x) => x.name === "default");
+    expect(g?.files.some((f) => f.path === path)).toBe(true);
+    expect(g?.files.find((f) => f.path === path)?.title).toBe("After");
+
+    // The file must still be watched after the inode swap.
+    seen.length = 0;
+    await writeFile(path, "# Again");
+    await waitFor(() => seen.length > 0, 3000);
   });
 
   it("removes a file entry when its underlying file is unlinked", async () => {

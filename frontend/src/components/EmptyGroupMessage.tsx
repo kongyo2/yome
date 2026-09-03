@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
 import type { Group } from "../hooks/useApi";
+import { useCopiedFeedback } from "../hooks/useCopiedFeedback";
+import { copyText } from "../utils/clipboard";
 
 interface EmptyGroupMessageProps {
   group: Group | undefined;
@@ -28,21 +29,10 @@ interface CommandRowProps {
 }
 
 function CommandRow({ command }: CommandRowProps) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
+  const [copied, markCopied] = useCopiedFeedback();
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      // clipboard API may fail in insecure contexts
-    }
+    if (await copyText(command)) markCopied();
   };
 
   return (

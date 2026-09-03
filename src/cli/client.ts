@@ -6,16 +6,34 @@ import { readdir } from "node:fs/promises";
 import { backupDir } from "../backup/index.js";
 import { logger, logDir } from "../logfile/index.js";
 import { DefaultGroup } from "../server/group.js";
+import type { UploadedFileData } from "../common/restore.js";
 import {
   PROBE_TIMEOUT_DEFAULT,
   httpGetJson,
   httpRequestJson,
   probeServer,
+  statusUrl,
+  type ProbeStatus,
 } from "./probe.js";
 import { toAbsolute } from "./args.js";
 import { buildDeeplink, writeJson, type DeeplinkEntry } from "./display.js";
 
 export { writeJson };
+
+function groupApi(addr: string, group: string): string {
+  return `http://${addr}/_/api/groups/${encodeURIComponent(group)}`;
+}
+
+function patternsApi(addr: string): string {
+  return `http://${addr}/_/api/patterns`;
+}
+
+// errorDetail turns a non-2xx response into a human-readable reason,
+// preferring the server's message over the bare status code.
+function errorDetail(resp: { status: number; body: string }): string {
+  const detail = resp.body.trim();
+  return detail ? detail : `HTTP ${resp.status}`;
+}
 
 async function listPortsFromDir(
   dir: string,
@@ -33,10 +51,11 @@ async function listPortsFromDir(
     if (!e.isFile()) continue;
     const name = e.name;
     if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    // Exclude rotated backups like "yome-6275.log.1" and any non-numeric
+    // remainder.
     const raw = name.substring(prefix.length, name.length - suffix.length);
     const p = Number(raw);
-    if (!Number.isFinite(p) || !Number.isInteger(p) || String(p) !== raw)
-      continue;
+    if (!Number.isInteger(p) || String(p) !== raw) continue;
     ports.push(p);
   }
   return ports;
@@ -68,17 +87,6 @@ async function discoverPorts(): Promise<number[]> {
   return (await discoverPortsDetailed()).all;
 }
 
-interface StatusResponse {
-  version: string;
-  revision: string;
-  pid: number;
-  groups: Array<{
-    name: string;
-    files: Array<{ name: string; id: string; path: string }>;
-    patterns?: string[];
-  }>;
-}
-
 export async function doStatus(jsonMode: boolean): Promise<number> {
   const { all: ports, backupOnly } = await discoverPortsDetailed();
   if (ports.length === 0) {
@@ -91,12 +99,9 @@ export async function doStatus(jsonMode: boolean): Promise<number> {
   for (let i = 0; i < ports.length; i++) {
     const p = ports[i]!;
     const addr = `localhost:${p}`;
-    let status: StatusResponse | null = null;
+    let status: ProbeStatus | null = null;
     try {
-      status = await httpGetJson<StatusResponse>(
-        `http://${addr}/_/api/status`,
-        2000,
-      );
+      status = await httpGetJson<ProbeStatus>(statusUrl(addr), 2000);
     } catch {
       found = true;
       const orphanBackup = backupOnly.has(p);
@@ -121,15 +126,14 @@ export async function doStatus(jsonMode: boolean): Promise<number> {
         files: g.files.length,
         patterns: g.patterns ?? [],
       }));
-      const entry: Record<string, unknown> = {
+      jsonEntries.push({
         url: `http://${addr}`,
         status: "running",
         pid: status.pid,
         version: status.version,
         revision: status.revision,
         groups,
-      };
-      jsonEntries.push(entry);
+      });
     } else {
       let ver = status.version;
       if (status.revision !== "" && status.revision !== "HEAD")
@@ -152,34 +156,30 @@ export async function doStatus(jsonMode: boolean): Promise<number> {
   return 0;
 }
 
-export async function doShutdown(addr: string): Promise<void> {
+async function postControl(
+  addr: string,
+  action: "shutdown" | "restart",
+): Promise<void> {
   await probeServer(addr);
   const resp = await httpRequestJson(
     "POST",
-    `http://${addr}/_/api/shutdown`,
+    `http://${addr}/_/api/${action}`,
     {},
     PROBE_TIMEOUT_DEFAULT,
   );
   if (resp.status !== 202) {
     throw new Error(`unexpected response from server: ${resp.status}`);
   }
-  logger.info("shutdown request sent", { addr });
-  process.stderr.write(`yome: shutdown request sent to http://${addr}\n`);
+  logger.info(`${action} request sent`, { addr });
+  process.stderr.write(`yome: ${action} request sent to http://${addr}\n`);
+}
+
+export async function doShutdown(addr: string): Promise<void> {
+  await postControl(addr, "shutdown");
 }
 
 export async function doRestart(addr: string): Promise<void> {
-  await probeServer(addr);
-  const resp = await httpRequestJson(
-    "POST",
-    `http://${addr}/_/api/restart`,
-    {},
-    PROBE_TIMEOUT_DEFAULT,
-  );
-  if (resp.status !== 202) {
-    throw new Error(`unexpected response from server: ${resp.status}`);
-  }
-  logger.info("restart request sent", { addr });
-  process.stderr.write(`yome: restart request sent to http://${addr}\n`);
+  await postControl(addr, "restart");
 }
 
 export async function shutdownOrRestartAll(
@@ -202,11 +202,7 @@ export async function shutdownOrRestartAll(
       continue;
     }
     try {
-      if (action === "shutdown") {
-        await doShutdown(addr);
-      } else {
-        await doRestart(addr);
-      }
+      await postControl(addr, action);
       actedCount++;
     } catch (err) {
       errors.push({ port, message: (err as Error).message });
@@ -232,7 +228,7 @@ export async function doUnwatch(
   for (const pat of patterns) {
     const resp = await httpRequestJson(
       "DELETE",
-      `http://${addr}/_/api/patterns`,
+      patternsApi(addr),
       { pattern: pat, group: groupName },
       PROBE_TIMEOUT_DEFAULT,
     );
@@ -253,8 +249,8 @@ export async function fetchRegisteredPatterns(
   addr: string,
   groupName: string,
 ): Promise<string[]> {
-  const status = await httpGetJson<StatusResponse>(
-    `http://${addr}/_/api/status`,
+  const status = await httpGetJson<ProbeStatus>(
+    statusUrl(addr),
     PROBE_TIMEOUT_DEFAULT,
   );
   for (const g of status.groups) {
@@ -271,8 +267,8 @@ export async function doClose(
   groupName: string,
 ): Promise<{ closed: string[]; errors: Error[] }> {
   await probeServer(addr);
-  const status = await httpGetJson<StatusResponse>(
-    `http://${addr}/_/api/status`,
+  const status = await httpGetJson<ProbeStatus>(
+    statusUrl(addr),
     PROBE_TIMEOUT_DEFAULT,
   );
   const pathToID = new Map<string, string>();
@@ -300,7 +296,7 @@ export async function doClose(
     try {
       const resp = await httpRequestJson(
         "DELETE",
-        `http://${addr}/_/api/groups/${encodeURIComponent(groupName)}/files/${id}`,
+        `${groupApi(addr, groupName)}/files/${id}`,
         undefined,
         PROBE_TIMEOUT_DEFAULT,
       );
@@ -352,17 +348,16 @@ export async function postFiles(
     try {
       const resp = await httpRequestJson(
         "POST",
-        `http://${addr}/_/api/groups/${encodeURIComponent(group)}/files`,
+        `${groupApi(addr, group)}/files`,
         { path: f },
         PROBE_TIMEOUT_DEFAULT,
       );
       if (resp.status !== 200) {
-        const detail = resp.body.trim();
-        const message = detail
-          ? `failed to add "${f}": ${detail}`
-          : `failed to add "${f}": HTTP ${resp.status}`;
         logger.warn("failed to add file", { path: f, status: resp.status });
-        errors.push({ target: f, message });
+        errors.push({
+          target: f,
+          message: `failed to add "${f}": ${errorDetail(resp)}`,
+        });
         continue;
       }
       const entry = JSON.parse(resp.body) as { id: string; path: string };
@@ -372,14 +367,20 @@ export async function postFiles(
         path: entry.path,
       });
     } catch (err) {
-      const message = `failed to add "${f}": ${(err as Error).message}`;
       logger.warn("failed to post file", { path: f, error: String(err) });
-      errors.push({ target: f, message });
+      errors.push({
+        target: f,
+        message: `failed to add "${f}": ${(err as Error).message}`,
+      });
     }
   }
   return { entries, errors, succeeded };
 }
 
+// postPatterns registers each pattern with the running server. `succeeded`
+// counts the patterns that were actually registered, which is not derivable
+// from entries.length because a valid pattern may legitimately match zero
+// files.
 export async function postPatterns(
   addr: string,
   group: string,
@@ -392,20 +393,19 @@ export async function postPatterns(
     try {
       const resp = await httpRequestJson(
         "POST",
-        `http://${addr}/_/api/patterns`,
+        patternsApi(addr),
         { pattern: pat, group },
         PROBE_TIMEOUT_DEFAULT,
       );
       if (resp.status !== 200) {
-        const detail = resp.body.trim();
-        const message = detail
-          ? `failed to add pattern "${pat}": ${detail}`
-          : `failed to add pattern "${pat}": HTTP ${resp.status}`;
         logger.warn("failed to add pattern", {
           pattern: pat,
           status: resp.status,
         });
-        errors.push({ target: pat, message });
+        errors.push({
+          target: pat,
+          message: `failed to add pattern "${pat}": ${errorDetail(resp)}`,
+        });
         continue;
       }
       const data = JSON.parse(resp.body) as {
@@ -420,12 +420,14 @@ export async function postPatterns(
         });
       }
     } catch (err) {
-      const message = `failed to add pattern "${pat}": ${(err as Error).message}`;
       logger.warn("failed to post pattern", {
         pattern: pat,
         error: String(err),
       });
-      errors.push({ target: pat, message });
+      errors.push({
+        target: pat,
+        message: `failed to add pattern "${pat}": ${(err as Error).message}`,
+      });
     }
   }
   return { entries, errors, succeeded };
@@ -439,12 +441,12 @@ export async function postUploadedFile(
 ): Promise<DeeplinkEntry> {
   const resp = await httpRequestJson(
     "POST",
-    `http://${addr}/_/api/groups/${encodeURIComponent(group)}/files/upload`,
+    `${groupApi(addr, group)}/files/upload`,
     { name, content },
     PROBE_TIMEOUT_DEFAULT,
   );
   if (resp.status !== 200) {
-    throw new Error(`upload failed: ${resp.status}: ${resp.body.trim()}`);
+    throw new Error(`failed to upload "${name}": ${errorDetail(resp)}`);
   }
   const entry = JSON.parse(resp.body) as { id: string; name: string };
   return {
@@ -452,4 +454,61 @@ export async function postUploadedFile(
     path: "",
     name: entry.name,
   };
+}
+
+// A PostBatch is everything a CLI invocation wants a running server to take
+// over: plain files and watch patterns per group, plus uploaded (stdin)
+// contents. It is the same shape whether the server was found up front or
+// won a concurrent startup race against the one we spawned.
+export interface PostBatch {
+  filesByGroup: Map<string, string[]>;
+  patternsByGroup: Map<string, string[]>;
+  uploadedFiles: UploadedFileData[];
+}
+
+export interface PostBatchResult {
+  entries: DeeplinkEntry[];
+  errors: PostFileError[];
+  // Items the server accepted / items we tried. Only accepted items count
+  // toward the "added N item(s)" line so partial failures never overstate.
+  added: number;
+  attempted: number;
+}
+
+export async function postBatch(
+  addr: string,
+  batch: PostBatch,
+): Promise<PostBatchResult> {
+  const entries: DeeplinkEntry[] = [];
+  const errors: PostFileError[] = [];
+  let added = 0;
+  let attempted = 0;
+  for (const [group, files] of batch.filesByGroup) {
+    attempted += files.length;
+    const r = await postFiles(addr, group, files);
+    entries.push(...r.entries);
+    errors.push(...r.errors);
+    added += r.succeeded;
+  }
+  for (const [group, patterns] of batch.patternsByGroup) {
+    attempted += patterns.length;
+    const r = await postPatterns(addr, group, patterns);
+    entries.push(...r.entries);
+    errors.push(...r.errors);
+    added += r.succeeded;
+  }
+  for (const uf of batch.uploadedFiles) {
+    attempted++;
+    try {
+      entries.push(await postUploadedFile(addr, uf.group, uf.name, uf.content));
+      added++;
+    } catch (err) {
+      logger.warn("failed to upload file", {
+        name: uf.name,
+        error: String(err),
+      });
+      errors.push({ target: uf.name, message: (err as Error).message });
+    }
+  }
+  return { entries, errors, added, attempted };
 }

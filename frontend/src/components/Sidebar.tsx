@@ -14,29 +14,23 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { FileEntry, Group, SearchResult } from "../hooks/useApi";
+import type { Group, SearchResult } from "../hooks/useApi";
 import { removeFile, moveFile } from "../hooks/useApi";
+import { useResizablePanel } from "../hooks/useResizablePanel";
+import { copyText } from "../utils/clipboard";
 import { buildFileUrl, sortGroupsForDisplay } from "../utils/groups";
 import { isPlainLeftClick } from "../utils/linkClick";
 import { escapeRegExp } from "../utils/regex";
 import type { ViewMode } from "./ViewModeToggle";
 import { TreeView } from "./TreeView";
-import { FileContextMenu } from "./FileContextMenu";
+import type { FileMenuActions, FileMenuState } from "./FileContextMenu";
+import { FileItem, type FileItemProps } from "./FileItem";
 import { FileIcon } from "./FileIcon";
 
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 260;
 const STORAGE_KEY = "yome-sidebar-width";
-
-function getInitialWidth(): number {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) {
-    const n = parseInt(stored, 10);
-    if (n >= MIN_WIDTH && n <= MAX_WIDTH) return n;
-  }
-  return DEFAULT_WIDTH;
-}
 
 function renderHighlightedText(text: string, query: string) {
   if (!query) {
@@ -55,77 +49,6 @@ function renderHighlightedText(text: string, query: string) {
     ) : (
       <span key={`${part}:${index}`}>{part}</span>
     ),
-  );
-}
-
-interface FileItemProps {
-  file: FileEntry;
-  activeGroup: string;
-  isActive: boolean;
-  showTitle: boolean;
-  menuOpenId: string | null;
-  otherGroups: Group[];
-  onFileSelect: (id: string) => void;
-  onMenuToggle: (id: string) => void;
-  onOpenInNewTab: (id: string) => void;
-  onCopyPath: (path: string) => void;
-  onCopyLink: (id: string) => void;
-  onMoveToGroup: (id: string, group: string) => void;
-  onRemove: (id: string) => void;
-  menuRef: React.RefObject<HTMLDivElement | null>;
-}
-
-function FileItem({
-  file,
-  activeGroup,
-  isActive,
-  showTitle,
-  menuOpenId,
-  otherGroups,
-  onFileSelect,
-  onMenuToggle,
-  onOpenInNewTab,
-  onCopyPath,
-  onCopyLink,
-  onMoveToGroup,
-  onRemove,
-  menuRef,
-}: FileItemProps) {
-  return (
-    <div className="relative group/file">
-      <a
-        href={buildFileUrl(activeGroup, file.id)}
-        className={`flex items-center gap-2 w-full px-3 py-2 border-none cursor-pointer text-left text-sm no-underline transition-colors duration-150 ${
-          isActive
-            ? "bg-gh-bg-active text-gh-text font-semibold"
-            : "bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover"
-        }`}
-        onClick={(e) => {
-          if (!isPlainLeftClick(e)) return;
-          e.preventDefault();
-          onFileSelect(file.id);
-        }}
-        title={file.uploaded ? file.name : file.path}
-        aria-current={isActive ? "page" : undefined}
-      >
-        <FileIcon uploaded={file.uploaded} />
-        <span className="overflow-hidden text-ellipsis whitespace-nowrap pr-6">
-          {(showTitle && file.title) || file.name}
-        </span>
-      </a>
-      <FileContextMenu
-        file={file}
-        isOpen={menuOpenId === file.id}
-        otherGroups={otherGroups}
-        onToggle={onMenuToggle}
-        onOpenInNewTab={onOpenInNewTab}
-        onCopyPath={onCopyPath}
-        onCopyLink={onCopyLink}
-        onMoveToGroup={onMoveToGroup}
-        onRemove={onRemove}
-        menuRef={menuRef}
-      />
-    </div>
   );
 }
 
@@ -151,6 +74,28 @@ function SortableFileItem(props: FileItemProps) {
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
       <FileItem {...props} />
     </div>
+  );
+}
+
+function SectionToggle({
+  label,
+  open,
+  onToggle,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center justify-between px-3 pt-2 pb-1 text-left text-xs font-semibold uppercase tracking-wide text-gh-text-secondary"
+      onClick={onToggle}
+      aria-expanded={open}
+    >
+      <span>{label}</span>
+      <span className="text-sm leading-none">{open ? "−" : "+"}</span>
+    </button>
   );
 }
 
@@ -208,8 +153,13 @@ export function Sidebar({
     }
   }, [searchOpen]);
 
-  const [width, setWidth] = useState(getInitialWidth);
-  const resizeDragging = useRef(false);
+  const { width, onResizeStart } = useResizablePanel({
+    storageKey: STORAGE_KEY,
+    min: MIN_WIDTH,
+    max: MAX_WIDTH,
+    defaultWidth: DEFAULT_WIDTH,
+    edge: "left",
+  });
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [contentMatchesOpen, setContentMatchesOpen] = useState(true);
   const [fileMatchesOpen, setFileMatchesOpen] = useState(true);
@@ -239,37 +189,6 @@ export function Sidebar({
     [files, activeGroup, onFilesReorder],
   );
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    resizeDragging.current = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, []);
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!resizeDragging.current) return;
-      const clamped = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, e.clientX));
-      setWidth(clamped);
-    };
-    const onMouseUp = () => {
-      if (!resizeDragging.current) return;
-      resizeDragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, String(width));
-  }, [width]);
-
   // Close menu on outside click
   useEffect(() => {
     if (menuOpenId == null) return;
@@ -282,63 +201,56 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpenId]);
 
-  const handleOpenInNewTab = useCallback(
-    (id: string) => {
-      setMenuOpenId(null);
-      window.open(buildFileUrl(activeGroup, id), "_blank");
-    },
-    [activeGroup],
-  );
-
   const otherGroups = useMemo(
     () => sortGroupsForDisplay(groups.filter((g) => g.name !== activeGroup)),
     [groups, activeGroup],
   );
 
-  const handleMoveToGroup = useCallback(
-    async (id: string, group: string) => {
-      setMenuOpenId(null);
-      try {
-        await moveFile(activeGroup, id, group);
-      } catch (err) {
-        window.alert(
-          err instanceof Error ? err.message : "Failed to move file",
+  const menu = useMemo<FileMenuState>(
+    () => ({ openId: menuOpenId, otherGroups, menuRef }),
+    [menuOpenId, otherGroups],
+  );
+
+  const actions = useMemo<FileMenuActions>(
+    () => ({
+      onToggle: (id) => setMenuOpenId((prev) => (prev === id ? null : id)),
+      onOpenInNewTab: (id) => {
+        setMenuOpenId(null);
+        window.open(buildFileUrl(activeGroup, id), "_blank");
+      },
+      onCopyPath: (path) => {
+        setMenuOpenId(null);
+        void copyText(path);
+      },
+      onCopyLink: (id) => {
+        setMenuOpenId(null);
+        const url = new URL(
+          buildFileUrl(activeGroup, id),
+          window.location.origin,
         );
-      }
-    },
+        void copyText(url.toString());
+      },
+      onMoveToGroup: async (id, group) => {
+        setMenuOpenId(null);
+        try {
+          await moveFile(activeGroup, id, group);
+        } catch (err) {
+          window.alert(
+            err instanceof Error ? err.message : "Failed to move file",
+          );
+        }
+      },
+      onRemove: (id) => {
+        setMenuOpenId(null);
+        // A failed delete resolves itself on the next SSE update; just avoid
+        // an unhandled rejection here.
+        removeFile(activeGroup, id).catch(() => {});
+      },
+    }),
     [activeGroup],
   );
 
-  const handleCopyPath = useCallback((path: string) => {
-    setMenuOpenId(null);
-    navigator.clipboard.writeText(path).catch(() => {});
-  }, []);
-
-  const handleCopyLink = useCallback(
-    (id: string) => {
-      setMenuOpenId(null);
-      const url = new URL(
-        buildFileUrl(activeGroup, id),
-        window.location.origin,
-      );
-      navigator.clipboard.writeText(url.toString()).catch(() => {});
-    },
-    [activeGroup],
-  );
-
-  const handleRemove = useCallback(
-    (id: string) => {
-      setMenuOpenId(null);
-      // A failed delete resolves itself on the next SSE update; just avoid
-      // an unhandled rejection here.
-      removeFile(activeGroup, id).catch(() => {});
-    },
-    [activeGroup],
-  );
-
-  const handleMenuToggle = useCallback((id: string) => {
-    setMenuOpenId((prev) => (prev === id ? null : id));
-  }, []);
+  const rowProps = { activeGroup, showTitle, onFileSelect, menu, actions };
 
   return (
     <aside
@@ -369,17 +281,11 @@ export function Sidebar({
               </div>
             ) : searchResults.length > 0 ? (
               <>
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between px-3 pt-2 pb-1 text-left text-xs font-semibold uppercase tracking-wide text-gh-text-secondary"
-                  onClick={() => setContentMatchesOpen((v) => !v)}
-                  aria-expanded={contentMatchesOpen}
-                >
-                  <span>Content matches</span>
-                  <span className="text-sm leading-none">
-                    {contentMatchesOpen ? "−" : "+"}
-                  </span>
-                </button>
+                <SectionToggle
+                  label="Content matches"
+                  open={contentMatchesOpen}
+                  onToggle={() => setContentMatchesOpen((v) => !v)}
+                />
                 {contentMatchesOpen &&
                   searchResults.flatMap((result) =>
                     result.matches.map((match, index) => (
@@ -428,35 +334,18 @@ export function Sidebar({
             ) : null}
             {files.length > 0 && (
               <>
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between px-3 pt-2 pb-1 text-left text-xs font-semibold uppercase tracking-wide text-gh-text-secondary"
-                  onClick={() => setFileMatchesOpen((v) => !v)}
-                  aria-expanded={fileMatchesOpen}
-                >
-                  <span>File name matches</span>
-                  <span className="text-sm leading-none">
-                    {fileMatchesOpen ? "−" : "+"}
-                  </span>
-                </button>
+                <SectionToggle
+                  label="File name matches"
+                  open={fileMatchesOpen}
+                  onToggle={() => setFileMatchesOpen((v) => !v)}
+                />
                 {fileMatchesOpen &&
                   files.map((f) => (
                     <FileItem
                       key={f.id}
                       file={f}
-                      activeGroup={activeGroup}
                       isActive={f.id === activeFileId}
-                      showTitle={showTitle}
-                      menuOpenId={menuOpenId}
-                      otherGroups={otherGroups}
-                      onFileSelect={onFileSelect}
-                      onMenuToggle={handleMenuToggle}
-                      onOpenInNewTab={handleOpenInNewTab}
-                      onCopyPath={handleCopyPath}
-                      onCopyLink={handleCopyLink}
-                      onMoveToGroup={handleMoveToGroup}
-                      onRemove={handleRemove}
-                      menuRef={menuRef}
+                      {...rowProps}
                     />
                   ))}
               </>
@@ -470,22 +359,7 @@ export function Sidebar({
               )}
           </>
         ) : viewMode === "tree" ? (
-          <TreeView
-            files={files}
-            activeGroup={activeGroup}
-            activeFileId={activeFileId}
-            showTitle={showTitle}
-            menuOpenId={menuOpenId}
-            otherGroups={otherGroups}
-            onFileSelect={onFileSelect}
-            onMenuToggle={handleMenuToggle}
-            onOpenInNewTab={handleOpenInNewTab}
-            onCopyPath={handleCopyPath}
-            onCopyLink={handleCopyLink}
-            onMoveToGroup={handleMoveToGroup}
-            onRemove={handleRemove}
-            menuRef={menuRef}
-          />
+          <TreeView files={files} activeFileId={activeFileId} {...rowProps} />
         ) : (
           <DndContext
             sensors={sensors}
@@ -500,19 +374,8 @@ export function Sidebar({
                 <SortableFileItem
                   key={f.id}
                   file={f}
-                  activeGroup={activeGroup}
                   isActive={f.id === activeFileId}
-                  showTitle={showTitle}
-                  menuOpenId={menuOpenId}
-                  otherGroups={otherGroups}
-                  onFileSelect={onFileSelect}
-                  onMenuToggle={handleMenuToggle}
-                  onOpenInNewTab={handleOpenInNewTab}
-                  onCopyPath={handleCopyPath}
-                  onCopyLink={handleCopyLink}
-                  onMoveToGroup={handleMoveToGroup}
-                  onRemove={handleRemove}
-                  menuRef={menuRef}
+                  {...rowProps}
                 />
               ))}
             </SortableContext>
@@ -522,7 +385,7 @@ export function Sidebar({
       {/* Resize handle */}
       <div
         className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-gh-border active:bg-gh-border transition-colors"
-        onMouseDown={onMouseDown}
+        onMouseDown={onResizeStart}
       />
     </aside>
   );

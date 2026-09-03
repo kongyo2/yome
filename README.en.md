@@ -10,13 +10,13 @@ English | [日本語](README.md)
 
 It faithfully follows the behavior of the original Go implementation while being rewritten in Node.js + React so you can invoke it casually from npm with `npx`.
 
-> Upstream sync status: caught up to the equivalent of mo **v1.6.3** (2026-06-26).
+> Upstream sync status: caught up to the equivalent of mo **v1.6.7** (2026-08-03).
 
 ## Features
 
 - **Fast**: thoroughly optimized in v1.8.0 — ~3x faster CLI startup, 2–13x faster search core, 42% less initial browser JS (49% less gzipped), zero JS re-transfer on warm reloads with browser caching (see [`PERFORMANCE.md`](PERFORMANCE.md))
 - **Live reload**: saving a file re-renders it in the browser instantly
-- **Single-server model**: shares the default port `6275`, so a later `yome` invocation adds files to the existing session
+- **Single-server model**: shares the default port `6275`, so a later `yome` invocation adds files to the existing session (when several `yome` processes race for the port at once, the loser hands its files to the winner instead of reporting a false start)
 - **Groups (tabs)**: split content into named groups with `--target`, each with its own URL and sidebar
 - **Watch mode**: watches directories and glob patterns, automatically picking up newly created files (an empty group left with only a pattern shows a hint for the unwatch command)
 - **stdin input**: Markdown piped from stdin is rendered on the spot
@@ -28,6 +28,7 @@ It faithfully follows the behavior of the original Go implementation while being
   - Syntax highlighting via [Shiki](https://shiki.style/)
   - GitHub Alerts (`> [!NOTE]`, etc.)
   - Front matter support
+  - Inline base64 images (`data:image/...`) and relative-path images (re-fetched on change, revalidated with 304 when unchanged)
 
 ## Requirements
 
@@ -83,6 +84,8 @@ yome SKILL.md --no-restore-session
 ```
 
 > `--shutdown` keeps a backup so the session can be restored on the next launch. Use `--clear` when you really want it forgotten. `--status` shows a port that only has a backup left (its log is gone) as `(saved session backup only)`.
+>
+> When the port is taken by another program, `yome` fails immediately instead of pretending to have started (binary files and binary stdin are rejected the same way).
 
 ### Main options
 

@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { readStorage, writeStorage } from "../utils/storage";
 
 type Theme = "light" | "dark";
 
+const THEME_STORAGE_KEY = "yome-theme";
+
 function getInitialTheme(): Theme {
-  const stored = localStorage.getItem("yome-theme");
+  const stored = readStorage(THEME_STORAGE_KEY);
   if (stored === "light" || stored === "dark") return stored;
   return window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
@@ -15,7 +18,7 @@ export function ThemeToggle() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("yome-theme", theme);
+    writeStorage(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   const toggle = () => setTheme((t) => (t === "dark" ? "light" : "dark"));

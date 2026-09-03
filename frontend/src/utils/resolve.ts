@@ -46,9 +46,16 @@ export function resolveImageSrc(
   group: string,
   fileId: string,
 ): string | undefined {
-  // Pass through absolute URIs (http/https/data/etc.) and protocol-relative
+  if (!src) return src;
+  // Only data:image/ passes through: rehype-sanitize can allow the "data"
+  // scheme but not the MIME type, so restrict it here as defense in depth.
+  // (react-markdown's urlTransform already blanks other data: URIs.)
+  if (src.startsWith("data:")) {
+    return src.startsWith("data:image/") ? src : undefined;
+  }
+  // Pass through absolute URIs (http/https/etc.) and protocol-relative
   // references; only rewrite genuine relative paths to the raw-asset API.
-  if (src && !ABSOLUTE_URI_RE.test(src)) {
+  if (!ABSOLUTE_URI_RE.test(src)) {
     return `${rawBasePath(group, fileId)}/${src}`;
   }
   return src;

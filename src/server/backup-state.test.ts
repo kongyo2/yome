@@ -83,6 +83,27 @@ describe("enableBackup", () => {
     state.closeAllSubscribers();
   });
 
+  it("saves nothing seeded before enableBackup until scheduleBackup is called", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    const path = join(tmp, "seed.md");
+    writeFileSync(path, "# Seed");
+    // Seeded before the backup exists (the server has not bound its port
+    // yet): nothing may be scheduled.
+    state.addFile(path, "default");
+    const saves: Array<{ groups: Record<string, string[]> }> = [];
+    state.enableBackup((data) => {
+      saves.push({ groups: { ...data.groups } });
+    });
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(saves).toEqual([]);
+    // The explicit schedule persists the seeded session.
+    state.scheduleBackup();
+    await state.closeBackup();
+    expect(saves).toHaveLength(1);
+    expect(saves[0]?.groups["default"]).toEqual([path]);
+    state.closeAllSubscribers();
+  });
+
   it("does not save again after closeBackup", async () => {
     const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
     let saveCount = 0;

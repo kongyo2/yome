@@ -23,51 +23,45 @@ const CSP =
   "form-action 'self'; " +
   "frame-ancestors 'none'";
 
+function plainError(res: ServerResponse, status: number, body: string): void {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  res.statusCode = status;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end(body);
+}
+
 export function createServer(state: State): Server {
   const router = new Router();
   const h = buildHandlers(state, { pid: process.pid });
 
-  router.add("POST", "/_/api/groups/{group}/files", (req, res, p) =>
-    h.handleAddFile(req, res, p),
+  router.add("POST", "/_/api/groups/{group}/files", h.handleAddFile);
+  router.add("POST", "/_/api/groups/{group}/files/upload", h.handleUploadFile);
+  router.add("DELETE", "/_/api/groups/{group}/files/{id}", h.handleRemoveFile);
+  router.add("PUT", "/_/api/groups/{group}/files/{id}/group", h.handleMoveFile);
+  router.add("GET", "/_/api/groups", h.handleGroups);
+  router.add("PUT", "/_/api/groups/{group}/reorder", h.handleReorder);
+  router.add(
+    "GET",
+    "/_/api/groups/{group}/files/{id}/content",
+    h.handleFileContent,
   );
-  router.add("POST", "/_/api/groups/{group}/files/upload", (req, res, p) =>
-    h.handleUploadFile(req, res, p),
-  );
-  router.add("DELETE", "/_/api/groups/{group}/files/{id}", (req, res, p) =>
-    h.handleRemoveFile(req, res, p),
-  );
-  router.add("PUT", "/_/api/groups/{group}/files/{id}/group", (req, res, p) =>
-    h.handleMoveFile(req, res, p),
-  );
-  router.add("GET", "/_/api/groups", (req, res) => h.handleGroups(req, res));
-  router.add("PUT", "/_/api/groups/{group}/reorder", (req, res, p) =>
-    h.handleReorder(req, res, p),
-  );
-  router.add("GET", "/_/api/groups/{group}/files/{id}/content", (req, res, p) =>
-    h.handleFileContent(req, res, p),
-  );
-  router.add("GET", "/_/api/search", (req, res) => h.handleSearch(req, res));
+  router.add("GET", "/_/api/search", h.handleSearch);
   router.add(
     "GET",
     "/_/api/groups/{group}/files/{id}/raw/{path...}",
-    (req, res, p) => h.handleFileRaw(req, res, p),
+    h.handleFileRaw,
   );
-  router.add("POST", "/_/api/groups/{group}/files/open", (req, res, p) =>
-    h.handleOpenFile(req, res, p),
-  );
-  router.add("POST", "/_/api/patterns", (req, res) =>
-    h.handleAddPattern(req, res),
-  );
-  router.add("DELETE", "/_/api/patterns", (req, res) =>
-    h.handleRemovePattern(req, res),
-  );
-  router.add("POST", "/_/api/restart", (req, res) => h.handleRestart(req, res));
-  router.add("POST", "/_/api/shutdown", (req, res) =>
-    h.handleShutdown(req, res),
-  );
-  router.add("GET", "/_/api/status", (req, res) => h.handleStatus(req, res));
-  router.add("GET", "/_/api/version", (req, res) => h.handleVersion(req, res));
-  router.add("GET", "/_/events", (req, res) => h.handleSSE(req, res));
+  router.add("POST", "/_/api/groups/{group}/files/open", h.handleOpenFile);
+  router.add("POST", "/_/api/patterns", h.handleAddPattern);
+  router.add("DELETE", "/_/api/patterns", h.handleRemovePattern);
+  router.add("POST", "/_/api/restart", h.handleRestart);
+  router.add("POST", "/_/api/shutdown", h.handleShutdown);
+  router.add("GET", "/_/api/status", h.handleStatus);
+  router.add("GET", "/_/api/version", h.handleVersion);
+  router.add("GET", "/_/events", h.handleSSE);
 
   const server = http.createServer(
     (req: IncomingMessage, res: ServerResponse) => {
@@ -78,36 +72,29 @@ export function createServer(state: State): Server {
       const path = qIdx === -1 ? url : url.substring(0, qIdx);
       const method = req.method ?? "GET";
 
-      if (path.startsWith("/_/")) {
-        const match = router.match(method, path);
-        if (!match) {
-          res.statusCode = 404;
-          res.end("not found");
-          return;
-        }
-        try {
-          const result = match.handler(req, res, match.params);
-          if (result instanceof Promise) {
-            result.catch((err) => {
-              if (!res.headersSent) {
-                res.statusCode = 500;
-                res.setHeader("Content-Type", "text/plain; charset=utf-8");
-                res.end(String(err));
-              }
-            });
-          }
-        } catch (err) {
-          if (!res.headersSent) {
-            res.statusCode = 500;
-            res.setHeader("Content-Type", "text/plain; charset=utf-8");
-            res.end(String(err));
-          }
-        }
+      if (!path.startsWith("/_/")) {
+        // SPA fallback for everything else
+        serveSpa(req, res);
         return;
       }
 
-      // SPA fallback for everything else
-      serveSpa(req, res);
+      // HEAD is served by the GET handler: Node drops the body for HEAD
+      // responses on its own, so only the headers go out.
+      const match =
+        router.match(method, path) ??
+        (method === "HEAD" ? router.match("GET", path) : null);
+      if (!match) {
+        plainError(res, 404, "not found");
+        return;
+      }
+      try {
+        const result = match.handler(req, res, match.params);
+        if (result instanceof Promise) {
+          result.catch((err) => plainError(res, 500, String(err)));
+        }
+      } catch (err) {
+        plainError(res, 500, String(err));
+      }
     },
   );
 

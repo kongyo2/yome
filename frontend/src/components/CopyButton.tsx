@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { useCopiedFeedback } from "../hooks/useCopiedFeedback";
+import { copyText } from "../utils/clipboard";
 
 interface CopyButtonProps {
   content: string;
@@ -14,7 +16,7 @@ const formats: { key: CopyFormat; label: string }[] = [
 
 export function CopyButton({ content }: CopyButtonProps) {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, markCopied] = useCopiedFeedback();
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -32,36 +34,30 @@ export function CopyButton({ content }: CopyButtonProps) {
     setOpen(false);
     try {
       if (format === "markdown") {
-        await navigator.clipboard.writeText(content);
-      } else if (format === "text") {
+        if (!(await copyText(content))) return;
+      } else {
+        // The rendered document is the source for text/HTML copies; fall
+        // back to the raw Markdown when nothing is rendered (raw view).
         const el = document.querySelector<HTMLElement>(".markdown-body");
         const text = el ? el.innerText : content;
-        await navigator.clipboard.writeText(text);
-      } else {
-        const el = document.querySelector<HTMLElement>(".markdown-body");
-        const html = el ? el.innerHTML : content;
-        const blob = new Blob([html], { type: "text/html" });
-        const textBlob = new Blob([el ? el.innerText : content], {
-          type: "text/plain",
-        });
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            "text/html": blob,
-            "text/plain": textBlob,
-          }),
-        ]);
+        if (format === "text") {
+          if (!(await copyText(text))) return;
+        } else {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              "text/html": new Blob([el ? el.innerHTML : content], {
+                type: "text/html",
+              }),
+              "text/plain": new Blob([text], { type: "text/plain" }),
+            }),
+          ]);
+        }
       }
-      setCopied(true);
+      markCopied();
     } catch {
-      // clipboard API may fail in insecure contexts
+      // rich clipboard writes are unavailable in insecure contexts
     }
   };
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
 
   return (
     <div ref={ref} className="relative">

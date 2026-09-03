@@ -55,6 +55,12 @@ import {
 import { isMarkdownFile } from "./utils/filetype";
 import { formatFileLabel } from "./utils/fileLabel";
 import { prefetchRenderers } from "./utils/lazy-render";
+import {
+  readStorage,
+  readStorageRecord,
+  writeJsonStorage,
+  writeStorage,
+} from "./utils/storage";
 
 const VIEWMODE_STORAGE_KEY = "yome-sidebar-viewmode";
 const WIDTH_STORAGE_KEY = "yome-layout-width";
@@ -63,35 +69,20 @@ export const FONT_SIZE_STORAGE_KEY = "yome-font-size";
 export const TOC_OPEN_STORAGE_KEY = "yome-toc-open";
 
 export function getInitialFontSize(): FontSize {
-  try {
-    const stored = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
-    if (
-      stored === "small" ||
-      stored === "medium" ||
-      stored === "large" ||
-      stored === "xlarge"
-    ) {
-      return stored;
-    }
-  } catch {
-    /* ignore */
+  const stored = readStorage(FONT_SIZE_STORAGE_KEY);
+  if (
+    stored === "small" ||
+    stored === "medium" ||
+    stored === "large" ||
+    stored === "xlarge"
+  ) {
+    return stored;
   }
   return "medium";
 }
 
 export function getInitialTocOpenMap(): Record<string, boolean> {
-  try {
-    const stored = localStorage.getItem(TOC_OPEN_STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return {};
+  return readStorageRecord<boolean>(TOC_OPEN_STORAGE_KEY);
 }
 
 export function formatTitle(
@@ -138,31 +129,15 @@ export function App() {
     if (!parseFileIdFromSearch(window.location.search)) return null;
     return window.location.hash.slice(1) || null;
   });
-  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() => {
-    try {
-      const stored = localStorage.getItem(VIEWMODE_STORAGE_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch {
-      /* ignore */
-    }
-    return {};
-  });
-  const [showTitles, setShowTitles] = useState<Record<string, boolean>>(() => {
-    try {
-      const stored = localStorage.getItem(SHOW_TITLE_STORAGE_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch {
-      /* ignore */
-    }
-    return {};
-  });
-  const [isWide, setIsWide] = useState(() => {
-    try {
-      return localStorage.getItem(WIDTH_STORAGE_KEY) === "wide";
-    } catch {
-      return false;
-    }
-  });
+  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() =>
+    readStorageRecord<ViewMode>(VIEWMODE_STORAGE_KEY),
+  );
+  const [showTitles, setShowTitles] = useState<Record<string, boolean>>(() =>
+    readStorageRecord<boolean>(SHOW_TITLE_STORAGE_KEY),
+  );
+  const [isWide, setIsWide] = useState(
+    () => readStorage(WIDTH_STORAGE_KEY) === "wide",
+  );
   const [fontSize, setFontSize] = useState<FontSize>(getInitialFontSize);
   const knownFileIds = useRef<Set<string>>(new Set());
   const [initialFileId, setInitialFileId] = useState<string | null>(() => {
@@ -445,35 +420,23 @@ export function App() {
   const currentViewMode: ViewMode = viewModes[activeGroup] ?? "flat";
 
   useEffect(() => {
-    localStorage.setItem(VIEWMODE_STORAGE_KEY, JSON.stringify(viewModes));
+    writeJsonStorage(VIEWMODE_STORAGE_KEY, viewModes);
   }, [viewModes]);
 
   useEffect(() => {
-    localStorage.setItem(SHOW_TITLE_STORAGE_KEY, JSON.stringify(showTitles));
+    writeJsonStorage(SHOW_TITLE_STORAGE_KEY, showTitles);
   }, [showTitles]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(TOC_OPEN_STORAGE_KEY, JSON.stringify(tocOpenMap));
-    } catch {
-      /* ignore */
-    }
+    writeJsonStorage(TOC_OPEN_STORAGE_KEY, tocOpenMap);
   }, [tocOpenMap]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(WIDTH_STORAGE_KEY, isWide ? "wide" : "narrow");
-    } catch {
-      /* ignore */
-    }
+    writeStorage(WIDTH_STORAGE_KEY, isWide ? "wide" : "narrow");
   }, [isWide]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(FONT_SIZE_STORAGE_KEY, fontSize);
-    } catch {
-      /* ignore */
-    }
+    writeStorage(FONT_SIZE_STORAGE_KEY, fontSize);
   }, [fontSize]);
 
   const handleViewModeToggle = useCallback(() => {
@@ -586,10 +549,11 @@ export function App() {
 
   const handleHeadingClick = useCallback((id: string) => {
     const el = document.getElementById(id);
+    if (!el) return;
     const reduced = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
-    el?.scrollIntoView({
+    el.scrollIntoView({
       behavior: reduced ? "auto" : "smooth",
       block: "start",
     });

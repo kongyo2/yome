@@ -4,6 +4,7 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "lib": ["esnext"],
+    "types": ["node"],
 
     "outDir": "./dist",
     "rootDir": "./src",

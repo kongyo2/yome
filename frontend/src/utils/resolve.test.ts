@@ -173,10 +173,20 @@ describe("resolveImageSrc", () => {
     );
   });
 
-  it("passes through data: URIs", () => {
-    expect(resolveImageSrc("data:image/png;base64,AAA", "default", "a")).toBe(
-      "data:image/png;base64,AAA",
-    );
+  it("passes through data:image/ URIs unchanged", () => {
+    const src =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg==";
+    expect(resolveImageSrc(src, "default", "a")).toBe(src);
+  });
+
+  it("drops non-image data: URIs", () => {
+    expect(
+      resolveImageSrc(
+        "data:text/html,<script>alert(1)</script>",
+        "default",
+        "c",
+      ),
+    ).toBeUndefined();
   });
 
   it("passes through protocol-relative URLs", () => {

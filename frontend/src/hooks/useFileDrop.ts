@@ -52,7 +52,12 @@ export function useFileDrop(activeGroup: string): { isDragging: boolean } {
           uploads.push(
             file
               .text()
-              .then((content) => uploadFile(file.name, content, activeGroup))
+              .then((content) => {
+                // Binary files (images, archives) cannot be rendered as text;
+                // the server rejects them too, so skip the round trip.
+                if (content.includes("\0")) return undefined;
+                return uploadFile(file.name, content, activeGroup);
+              })
               .catch(() => {}),
           );
         }

@@ -12,10 +12,12 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -189,6 +191,146 @@ describe("yome CLI", () => {
       }
     },
   );
+
+  it(
+    "exits promptly with an error when the port is already taken",
+    { timeout: 30_000 },
+    async () => {
+      const tmpFile = join(stateDir, "busy.md");
+      writeFileSync(tmpFile, "# Busy\n");
+      // A saved session for the port must survive the failed starts
+      // untouched: only the instance that owns the port may write it.
+      const backupDir = join(stateDir, "yome", "backup");
+      mkdirSync(backupDir, { recursive: true });
+      const backupFile = join(backupDir, `yome-${port}.json`);
+      const savedSession = JSON.stringify({
+        groups: { default: [join(stateDir, "someone-elses.md")] },
+      });
+      writeFileSync(backupFile, savedSession);
+      // Occupy the port with a plain (non-yome) TCP server that never
+      // answers. Its accepted sockets are tracked so they can be torn down
+      // explicitly: yome's probes time out and go away, but a socket whose
+      // request bytes are never read stays open on this side and would
+      // keep blocker.close() from ever completing.
+      const blocker = createNetServer();
+      const blockerSockets = new Set<import("node:net").Socket>();
+      blocker.on("connection", (s) => {
+        blockerSockets.add(s);
+        s.on("close", () => blockerSockets.delete(s));
+      });
+      await new Promise<void>((resolve) =>
+        blocker.listen(port, "127.0.0.1", () => resolve()),
+      );
+      try {
+        // Foreground: the failure must be reported and the process must
+        // exit instead of idling on its file watcher.
+        const start = Date.now();
+        const fg = runYome(
+          [
+            "--foreground",
+            "--port",
+            String(port),
+            "--bind",
+            "127.0.0.1",
+            "--no-open",
+            tmpFile,
+          ],
+          { env: { XDG_STATE_HOME: stateDir } },
+        );
+        expect(fg.status).toBe(1);
+        expect(fg.stderr).toMatch(/cannot listen on 127\.0\.0\.1:\d+/);
+        expect(Date.now() - start).toBeLessThan(8000);
+
+        // Background: the parent must not report success either, and must
+        // give up well before the 10s readiness timeout once its child dies.
+        const bgStart = Date.now();
+        const bg = runYome(
+          ["--port", String(port), "--bind", "127.0.0.1", "--no-open", tmpFile],
+          { env: { XDG_STATE_HOME: stateDir } },
+        );
+        expect(bg.status).toBe(1);
+        expect(bg.stderr).toMatch(/exited unexpectedly|did not become ready/);
+        expect(bg.stderr).not.toMatch(/serving at/);
+        expect(Date.now() - bgStart).toBeLessThan(8000);
+        // The restore file handed to the dead child is cleaned up.
+        const leftovers = readdirSync(tmpdir()).filter((n) =>
+          n.startsWith("yome-restore-"),
+        );
+        expect(leftovers).toEqual([]);
+        await wait(1500);
+        expect(readFileSync(backupFile, "utf8")).toBe(savedSession);
+      } finally {
+        for (const s of blockerSockets) s.destroy();
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      }
+    },
+  );
+
+  it(
+    "two concurrent starts on an empty port end up with one server holding both files",
+    { timeout: 30_000 },
+    async () => {
+      const fileA = join(stateDir, "race-a.md");
+      const fileB = join(stateDir, "race-b.md");
+      writeFileSync(fileA, "# A\n");
+      writeFileSync(fileB, "# B\n");
+      const launch = (file: string) =>
+        new Promise<{ status: number | null; stderr: string }>((resolve) => {
+          const child = spawn(
+            process.execPath,
+            [
+              ...launchArgs,
+              "--port",
+              String(port),
+              "--bind",
+              "127.0.0.1",
+              "--no-open",
+              file,
+            ],
+            {
+              env: { ...process.env, XDG_STATE_HOME: stateDir },
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          let stderr = "";
+          child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+          child.stdout?.resume();
+          child.on("exit", (status) => resolve({ status, stderr }));
+        });
+      // Both probes see an empty port, both spawn a server; exactly one can
+      // bind. The loser must add its file to the winner rather than report
+      // a false success with a dead child behind it.
+      const [a, b] = await Promise.all([launch(fileA), launch(fileB)]);
+      expect(a.status, a.stderr).toBe(0);
+      expect(b.status, b.stderr).toBe(0);
+
+      const status = (await fetch(`http://127.0.0.1:${port}/_/api/status`).then(
+        (r) => r.json(),
+      )) as {
+        pid: number;
+        groups: Array<{ files: Array<{ path: string }> }>;
+      };
+      const paths = status.groups.flatMap((g) => g.files.map((f) => f.path));
+      expect(paths).toContain(fileA);
+      expect(paths).toContain(fileB);
+      // Every "serving at (pid N)" line must name the process that actually
+      // owns the port; a loser reports the takeover instead.
+      for (const out of [a.stderr, b.stderr]) {
+        const served = /serving at http:\/\/[^ ]+ \(pid (\d+)\)/.exec(out);
+        if (served) expect(Number(served[1])).toBe(status.pid);
+        else expect(out).toMatch(/added \d+ item\(s\)/);
+      }
+    },
+  );
+
+  it("rejects binary content on stdin before contacting any server", () => {
+    const r = runYome(["--port", String(port), "--no-open"], {
+      env: { XDG_STATE_HOME: stateDir },
+      input: "PNG  binary",
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/binary/);
+  });
 
   it("rejects an invalid group name", () => {
     const tmpFile = join(stateDir, "a.md");
