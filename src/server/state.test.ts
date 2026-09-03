@@ -159,6 +159,32 @@ describe("State", () => {
     await state.closeBackup();
   });
 
+  it("adds a newly created file to every group whose pattern matches", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    await mkdir(join(tmp, "docs"));
+    await state.addPattern(join(tmp, "docs", "*.md"), "alpha");
+    await state.addPattern(join(tmp, "docs", "**", "*.md"), "beta");
+    await state.addPattern(join(tmp, "docs", "*.txt"), "gamma");
+    const created = join(tmp, "docs", "later.md");
+    await writeFile(created, "# Later");
+    // Simulate the watcher's create event for the new file.
+    await (
+      state as unknown as { handleCreateForGlobs: (p: string) => Promise<void> }
+    ).handleCreateForGlobs(created);
+    const inGroup = (name: string) =>
+      state
+        .listGroups()
+        .find((g) => g.name === name)
+        ?.files.some((f) => f.path === created) ?? false;
+    // Same outcome as registration-time expansion: both matching groups
+    // get the file, the non-matching one does not.
+    expect(inGroup("alpha")).toBe(true);
+    expect(inGroup("beta")).toBe(true);
+    expect(inGroup("gamma")).toBe(false);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
   it("keeps a directory watch while another recursive pattern still covers it", async () => {
     const state = new State({ fileChangeDebounceMs: 0 });
     await mkdir(join(tmp, "docs"));

@@ -225,23 +225,29 @@ export function svgToPngBlob(svgString: string): Promise<Blob> {
 
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = width * scale;
-      canvas.height = height * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new Error("Failed to get canvas context"));
-        return;
-      }
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(blob);
-        } else {
-          reject(new Error("Failed to create PNG blob"));
+      // Drawing or exporting can throw (e.g. a SecurityError from a canvas
+      // that is not origin-clean); the promise must settle either way.
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Failed to get canvas context"));
+          return;
         }
-      }, "image/png");
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+          } else {
+            reject(new Error("Failed to create PNG blob"));
+          }
+        }, "image/png");
+      } catch (err) {
+        reject(err);
+      }
     };
     img.onerror = () => {
       reject(new Error("Failed to load SVG image"));

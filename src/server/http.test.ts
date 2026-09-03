@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AddressInfo } from "node:net";
@@ -395,6 +402,21 @@ describe("request body validation", () => {
     });
     expect(r2.status).toBe(400);
   });
+  it("delivers a 413 for an oversized upload instead of dropping the connection", async () => {
+    // 12MB body limit for the JSON envelope; send comfortably more.
+    const content = "x".repeat(13 * 1024 * 1024);
+    const res = await fetch(baseURL + "/_/api/groups/default/files/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "big.md", content }),
+    });
+    expect(res.status).toBe(413);
+    expect(await res.text()).toContain("too large");
+    expect(res.headers.get("connection")).toBe("close");
+    // The server keeps serving afterwards.
+    expect((await get("/_/api/version")).status).toBe(200);
+  });
+
   it("rejects binary uploaded content with a 400", async () => {
     const r = await postJson("/_/api/groups/default/files/upload", {
       name: "image.png",
@@ -473,6 +495,39 @@ describe("GET /_/api/groups/:group/files/:id/raw/:path", () => {
     expect(head.headers.get("content-length")).toBe("7");
     expect(await head.text()).toBe("");
   });
+  it("changes the validator when an asset is replaced by rename with the same size and mtime", async () => {
+    const dir = join(tmp, "doc");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "a.md"), "# A");
+    const pic = join(dir, "pic.png");
+    const stamp = new Date("2026-01-02T03:04:05.000Z");
+    await writeFile(pic, "AAAAAAA");
+    await utimes(pic, stamp, stamp);
+    const e = JSON.parse(
+      (
+        await postJson("/_/api/groups/default/files", {
+          path: join(dir, "a.md"),
+        })
+      ).body,
+    );
+    const url = `${baseURL}/_/api/groups/default/files/${e.id}/raw/pic.png`;
+    const first = await fetch(url);
+    const etag = first.headers.get("etag")!;
+    expect(await first.text()).toBe("AAAAAAA");
+
+    // A generator that preserves timestamps writes the same number of
+    // bytes to a temp file and renames it over the original.
+    const tmpPic = join(dir, ".pic.png.tmp");
+    await writeFile(tmpPic, "BBBBBBB");
+    await utimes(tmpPic, stamp, stamp);
+    await rename(tmpPic, pic);
+
+    const second = await fetch(url, { headers: { "if-none-match": etag } });
+    expect(second.status).toBe(200);
+    expect(second.headers.get("etag")).not.toBe(etag);
+    expect(await second.text()).toBe("BBBBBBB");
+  });
+
   it("answers 404 for a directory under the document's folder", async () => {
     const dir = join(tmp, "doc");
     await mkdir(join(dir, "sub"), { recursive: true });

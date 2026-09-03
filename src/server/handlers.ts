@@ -92,16 +92,22 @@ async function readJsonBody<T extends object>(
   return new Promise<T>((resolveP, rejectP) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (c: Buffer) => {
+    const onData = (c: Buffer) => {
       size += c.length;
       if (size > maxBytes) {
+        // Stop buffering but keep draining: destroying the socket here
+        // would race the 413 the handler is about to write and the client
+        // might never see it. The handler answers with Connection: close,
+        // so Node ends the socket once the response has been flushed.
+        req.removeListener("data", onData);
+        req.removeListener("end", onEnd);
+        req.resume();
         rejectP(new RequestEntityTooLargeError("payload too large"));
-        req.destroy();
         return;
       }
       chunks.push(c);
-    });
-    req.on("end", () => {
+    };
+    const onEnd = () => {
       const buf = Buffer.concat(chunks);
       if (buf.length === 0) {
         rejectP(new Error("empty body"));
@@ -123,9 +129,19 @@ async function readJsonBody<T extends object>(
         return;
       }
       resolveP(parsed as T);
-    });
+    };
+    req.on("data", onData);
+    req.on("end", onEnd);
     req.on("error", (err) => rejectP(err));
   });
+}
+
+// payloadTooLarge answers 413 for an oversized body. The remainder of that
+// body is being discarded, so the connection must not be reused for
+// another request.
+function payloadTooLarge(res: ServerResponse, message: string): void {
+  res.setHeader("Connection", "close");
+  textResponse(res, 413, message);
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -230,7 +246,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       return await readJsonBody<T>(req, MAX_UPLOAD_BYTES);
     } catch (err) {
       if (err instanceof RequestEntityTooLargeError) {
-        textResponse(res, 413, "payload too large");
+        payloadTooLarge(res, "payload too large");
       } else {
         textResponse(res, 400, (err as Error).message);
       }
@@ -285,7 +301,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       body = await readJsonBody<UploadFileReq>(req, MAX_UPLOAD_BYTES);
     } catch (err) {
       if (err instanceof RequestEntityTooLargeError) {
-        return textResponse(res, 413, "file too large (max 10MB)");
+        return payloadTooLarge(res, "file too large (max 10MB)");
       }
       return textResponse(res, 400, (err as Error).message);
     }

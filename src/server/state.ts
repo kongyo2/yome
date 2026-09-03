@@ -763,12 +763,17 @@ export class State {
     await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
   }
 
+  // matchAndAddFile adds a newly created file to every group with a
+  // matching pattern, the same way registration-time expansion did for
+  // files that already existed (addFile is idempotent per group).
   private matchAndAddFile(path: string, patterns: GlobPattern[]): void {
     for (const gp of patterns) {
       if (!matchPattern(gp.pattern, path)) continue;
       try {
         this.addFile(path, gp.group);
       } catch (err) {
+        // Rejected for what it is (e.g. binary); no other pattern can
+        // change that.
         logger.warn("skipping file", { path, error: String(err) });
         return;
       }
@@ -777,7 +782,6 @@ export class State {
         pattern: gp.pattern,
         group: gp.group,
       });
-      return;
     }
   }
 
@@ -812,8 +816,18 @@ export class State {
     return data;
   }
 
+  // enableBackup installs the save callback; nothing is written until the
+  // next state change or an explicit scheduleBackup(). Servers enable it
+  // only once they own their port, so a start that loses the port can never
+  // overwrite the backup of the instance that actually serves it.
   enableBackup(saveFn: BackupSaveFn): void {
     this.backupSaveFn = saveFn;
+  }
+
+  // scheduleBackup queues a (debounced) save of the current state, e.g. the
+  // session seeded before the backup was enabled.
+  scheduleBackup(): void {
+    this.markDirty();
   }
 
   // closeBackup flushes the final save and resolves once every pending

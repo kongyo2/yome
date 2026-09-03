@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { highlight, highlightCached } from "../utils/lazy-render";
+import { copyText } from "../utils/clipboard";
 import { useCopiedFeedback } from "../hooks/useCopiedFeedback";
 import { CheckIcon, CopyIcon, OverlayButton } from "./OverlayButton";
 
@@ -13,12 +14,7 @@ export function CodeBlockCopyButton({
   const [copied, markCopied] = useCopiedFeedback();
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      markCopied();
-    } catch {
-      // clipboard API may fail in insecure contexts
-    }
+    if (await copyText(code)) markCopied();
   };
 
   return (

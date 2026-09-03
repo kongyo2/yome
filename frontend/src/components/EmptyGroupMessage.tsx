@@ -1,5 +1,6 @@
 import type { Group } from "../hooks/useApi";
 import { useCopiedFeedback } from "../hooks/useCopiedFeedback";
+import { copyText } from "../utils/clipboard";
 
 interface EmptyGroupMessageProps {
   group: Group | undefined;
@@ -31,12 +32,7 @@ function CommandRow({ command }: CommandRowProps) {
   const [copied, markCopied] = useCopiedFeedback();
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      markCopied();
-    } catch {
-      // clipboard API may fail in insecure contexts
-    }
+    if (await copyText(command)) markCopied();
   };
 
   return (

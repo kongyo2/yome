@@ -17,6 +17,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Group, SearchResult } from "../hooks/useApi";
 import { removeFile, moveFile } from "../hooks/useApi";
 import { useResizablePanel } from "../hooks/useResizablePanel";
+import { copyText } from "../utils/clipboard";
 import { buildFileUrl, sortGroupsForDisplay } from "../utils/groups";
 import { isPlainLeftClick } from "../utils/linkClick";
 import { escapeRegExp } from "../utils/regex";
@@ -219,7 +220,7 @@ export function Sidebar({
       },
       onCopyPath: (path) => {
         setMenuOpenId(null);
-        navigator.clipboard.writeText(path).catch(() => {});
+        void copyText(path);
       },
       onCopyLink: (id) => {
         setMenuOpenId(null);
@@ -227,7 +228,7 @@ export function Sidebar({
           buildFileUrl(activeGroup, id),
           window.location.origin,
         );
-        navigator.clipboard.writeText(url.toString()).catch(() => {});
+        void copyText(url.toString());
       },
       onMoveToGroup: async (id, group) => {
         setMenuOpenId(null);

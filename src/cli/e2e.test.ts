@@ -198,8 +198,26 @@ describe("yome CLI", () => {
     async () => {
       const tmpFile = join(stateDir, "busy.md");
       writeFileSync(tmpFile, "# Busy\n");
-      // Occupy the port with a plain (non-yome) TCP server.
+      // A saved session for the port must survive the failed starts
+      // untouched: only the instance that owns the port may write it.
+      const backupDir = join(stateDir, "yome", "backup");
+      mkdirSync(backupDir, { recursive: true });
+      const backupFile = join(backupDir, `yome-${port}.json`);
+      const savedSession = JSON.stringify({
+        groups: { default: [join(stateDir, "someone-elses.md")] },
+      });
+      writeFileSync(backupFile, savedSession);
+      // Occupy the port with a plain (non-yome) TCP server that never
+      // answers. Its accepted sockets are tracked so they can be torn down
+      // explicitly: yome's probes time out and go away, but a socket whose
+      // request bytes are never read stays open on this side and would
+      // keep blocker.close() from ever completing.
       const blocker = createNetServer();
+      const blockerSockets = new Set<import("node:net").Socket>();
+      blocker.on("connection", (s) => {
+        blockerSockets.add(s);
+        s.on("close", () => blockerSockets.delete(s));
+      });
       await new Promise<void>((resolve) =>
         blocker.listen(port, "127.0.0.1", () => resolve()),
       );
@@ -239,7 +257,10 @@ describe("yome CLI", () => {
           n.startsWith("yome-restore-"),
         );
         expect(leftovers).toEqual([]);
+        await wait(1500);
+        expect(readFileSync(backupFile, "utf8")).toBe(savedSession);
       } finally {
+        for (const s of blockerSockets) s.destroy();
         await new Promise<void>((resolve) => blocker.close(() => resolve()));
       }
     },

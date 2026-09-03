@@ -62,7 +62,10 @@ export function FileContextMenu({ file, menu, actions }: FileContextMenuProps) {
   return (
     <>
       <button
-        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/file:opacity-100 flex items-center justify-center bg-transparent border-none cursor-pointer text-gh-text-secondary hover:text-gh-text rounded p-0.5 transition-opacity duration-150"
+        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/file:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-gh-accent flex items-center justify-center bg-transparent border-none cursor-pointer text-gh-text-secondary hover:text-gh-text rounded p-0.5 transition-opacity duration-150"
+        aria-label={`More actions for ${file.name}`}
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
         onClick={(e) => {
           e.stopPropagation();
           actions.onToggle(file.id);

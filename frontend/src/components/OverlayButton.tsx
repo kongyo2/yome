@@ -33,7 +33,7 @@ export function OverlayButton({
   return (
     <button
       type="button"
-      className={`absolute ${position} flex items-center justify-center rounded-md p-1 cursor-pointer transition-all duration-150 border ${dark ? DARK_OVERLAY_STYLE : THEMED_OVERLAY_STYLE} ${visible ? "opacity-100" : `opacity-0 ${groupClass}`}`}
+      className={`absolute ${position} flex items-center justify-center rounded-md p-1 cursor-pointer transition-all duration-150 border ${dark ? DARK_OVERLAY_STYLE : THEMED_OVERLAY_STYLE} ${visible ? "opacity-100" : `opacity-0 ${groupClass} focus-visible:opacity-100`}`}
       onClick={onClick}
       title={title}
     >

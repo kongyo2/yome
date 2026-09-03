@@ -52,6 +52,8 @@ export function useResizablePanel({
     return () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      // Unmounting mid-drag must not leave the page stuck in resize mode.
+      onMouseUp();
     };
   }, [edge, min, max]);
 

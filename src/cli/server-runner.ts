@@ -99,11 +99,6 @@ export async function startServer(
 ): Promise<ServerRunResult> {
   const state = new State();
 
-  if (!opts.disableBackup) {
-    // Return the promise so State can await the final flush during shutdown.
-    state.enableBackup((data) => saveBackup(opts.port, data));
-  }
-
   let deeplinks: DeeplinkEntry[];
   try {
     deeplinks = await seedState(state, opts);
@@ -184,6 +179,17 @@ export async function startServer(
     server.listen(opts.port, opts.host, () => {
       listening = true;
       logger.info("serving", { url: `http://${opts.addr}` });
+      if (!opts.disableBackup) {
+        // Only the instance that owns the port may write its backup: a
+        // start that loses the bind must never clobber the winner's saved
+        // session, so the backup is enabled here rather than before the
+        // (possibly slow) seeding above. The callback returns its promise
+        // so State can await the final flush during shutdown. An empty
+        // session is not persisted (a port with no saved session must stay
+        // that way, e.g. right after --clear).
+        state.enableBackup((data) => saveBackup(opts.port, data));
+        if (state.listGroups().length > 0) state.scheduleBackup();
+      }
       if (opts.onReady) opts.onReady(deeplinks);
       if (!opts.noOpen) {
         const url = serverUrl(opts.addr, opts.target, DefaultGroup);

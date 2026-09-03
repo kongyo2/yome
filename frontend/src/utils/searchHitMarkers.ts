@@ -50,8 +50,9 @@ export function collectSearchHitMarkers(
         const range = document.createRange();
         range.setStart(current, start);
         range.setEnd(current, start + match[0].length);
-        const [rect] = Array.from(range.getClientRects());
-        if (rect != null && rect.height > 0 && rect.width > 0) {
+        // A match that wraps spans one rect per visual line; mark each.
+        for (const rect of Array.from(range.getClientRects())) {
+          if (rect.height <= 0 || rect.width <= 0) continue;
           const top = rect.top - articleRect.top;
           const height = rect.height;
           markers.set(`${Math.round(top)}:${Math.round(height)}`, {

@@ -206,7 +206,7 @@ export function sendLocalFile(
 ): void {
   let st;
   try {
-    st = statSync(path);
+    st = statSync(path, { bigint: true });
   } catch {
     res.statusCode = 404;
     res.end("not found");
@@ -217,8 +217,12 @@ export function sendLocalFile(
     res.end("not a file");
     return;
   }
-  const mtimeMs = Math.floor(st.mtimeMs);
-  const etag = `W/"${st.size.toString(16)}-${mtimeMs.toString(16)}"`;
+  // Validator: size, nanosecond mtime, and inode. The inode catches the
+  // common "replace by rename" write (editors, generators) even when the
+  // tool preserves timestamps, and nanosecond precision separates rapid
+  // same-size in-place rewrites — cases a size+millisecond tag would 304.
+  const etag = `W/"${st.size.toString(16)}-${st.mtimeNs.toString(16)}-${st.ino.toString(16)}"`;
+  const mtimeMs = Number(st.mtimeNs / 1_000_000n);
   res.setHeader("Content-Type", mimeForFile(path));
   res.setHeader("ETag", etag);
   res.setHeader("Last-Modified", new Date(mtimeMs).toUTCString());

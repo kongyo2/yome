@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useCopiedFeedback } from "../hooks/useCopiedFeedback";
+import { copyText } from "../utils/clipboard";
 
 interface CopyButtonProps {
   content: string;
@@ -33,14 +34,14 @@ export function CopyButton({ content }: CopyButtonProps) {
     setOpen(false);
     try {
       if (format === "markdown") {
-        await navigator.clipboard.writeText(content);
+        if (!(await copyText(content))) return;
       } else {
         // The rendered document is the source for text/HTML copies; fall
         // back to the raw Markdown when nothing is rendered (raw view).
         const el = document.querySelector<HTMLElement>(".markdown-body");
         const text = el ? el.innerText : content;
         if (format === "text") {
-          await navigator.clipboard.writeText(text);
+          if (!(await copyText(text))) return;
         } else {
           await navigator.clipboard.write([
             new ClipboardItem({
@@ -54,7 +55,7 @@ export function CopyButton({ content }: CopyButtonProps) {
       }
       markCopied();
     } catch {
-      // clipboard API may fail in insecure contexts
+      // rich clipboard writes are unavailable in insecure contexts
     }
   };
 
