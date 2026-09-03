@@ -34,6 +34,9 @@ const MIME_TYPES: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
   ".ico": "image/x-icon",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
@@ -42,6 +45,14 @@ const MIME_TYPES: Record<string, string> = {
   ".eot": "application/vnd.ms-fontobject",
   ".map": "application/json; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
 };
 
 function mimeForFile(path: string): string {
@@ -101,6 +112,22 @@ function loadAsset(absPath: string): CachedAsset | null {
   return asset;
 }
 
+// etagMatches implements the weak comparison of If-None-Match (RFC 9110
+// §13.1.2): a list of entity tags, or "*", where W/ prefixes are ignored.
+function etagMatches(
+  header: string | string[] | undefined,
+  etag: string,
+): boolean {
+  if (header === undefined) return false;
+  const raw = Array.isArray(header) ? header.join(",") : header;
+  if (raw.trim() === "*") return true;
+  const strong = etag.replace(/^W\//, "");
+  return raw
+    .split(",")
+    .map((t) => t.trim().replace(/^W\//, ""))
+    .some((t) => t === strong);
+}
+
 function sendAsset(
   req: IncomingMessage,
   res: ServerResponse,
@@ -112,13 +139,17 @@ function sendAsset(
     "Cache-Control",
     asset.immutable ? "public, max-age=31536000, immutable" : "no-cache",
   );
-  if (req.headers["if-none-match"] === asset.etag) {
+  if (etagMatches(req.headers["if-none-match"], asset.etag)) {
     res.statusCode = 304;
     res.end();
     return;
   }
   res.statusCode = 200;
   res.setHeader("Content-Length", String(asset.buf.length));
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
   res.end(asset.buf);
 }
 
@@ -164,7 +195,15 @@ export function serveSpa(req: IncomingMessage, res: ServerResponse): void {
   res.end("not found");
 }
 
-export function sendFile(res: ServerResponse, path: string): void {
+// sendLocalFile streams a user file (raw assets referenced from Markdown:
+// images, attachments) with validators so a browser re-render does not
+// re-download unchanged images: `no-cache` forces a revalidation on every
+// use, and a matching If-None-Match / If-Modified-Since answers 304.
+export function sendLocalFile(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+): void {
   let st;
   try {
     st = statSync(path);
@@ -173,14 +212,45 @@ export function sendFile(res: ServerResponse, path: string): void {
     res.end("not found");
     return;
   }
-  res.statusCode = 200;
+  if (!st.isFile()) {
+    res.statusCode = 404;
+    res.end("not a file");
+    return;
+  }
+  const mtimeMs = Math.floor(st.mtimeMs);
+  const etag = `W/"${st.size.toString(16)}-${mtimeMs.toString(16)}"`;
   res.setHeader("Content-Type", mimeForFile(path));
+  res.setHeader("ETag", etag);
+  res.setHeader("Last-Modified", new Date(mtimeMs).toUTCString());
+  res.setHeader("Cache-Control", "no-cache");
+
+  let fresh = etagMatches(req.headers["if-none-match"], etag);
+  const ims = req.headers["if-modified-since"];
+  if (!fresh && req.headers["if-none-match"] === undefined && ims) {
+    const since = Date.parse(Array.isArray(ims) ? (ims[0] ?? "") : ims);
+    // HTTP dates carry second precision; compare at that granularity.
+    if (!Number.isNaN(since))
+      fresh = Math.floor(mtimeMs / 1000) * 1000 <= since;
+  }
+  if (fresh) {
+    res.statusCode = 304;
+    res.end();
+    return;
+  }
+
+  res.statusCode = 200;
   res.setHeader("Content-Length", String(st.size));
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
   const stream = createReadStream(path);
   stream.on("error", () => {
     if (!res.headersSent) {
       res.statusCode = 500;
       res.end();
+    } else {
+      res.destroy();
     }
   });
   stream.pipe(res);

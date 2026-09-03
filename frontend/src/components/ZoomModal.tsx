@@ -2,8 +2,7 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 
 export type ZoomContent =
-  | { type: "image"; src: string; alt?: string }
-  | { type: "svg"; svg: string };
+  { type: "image"; src: string; alt?: string } | { type: "svg"; svg: string };
 
 interface ZoomModalProps {
   content: ZoomContent;

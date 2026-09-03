@@ -77,6 +77,7 @@ export async function expandGlob(
               // like the sequential walk emitted it.
               if (includeSelf) r.push(childAbs);
               parts[slot] = r;
+              return undefined;
             }),
           );
         } else if (includeSelf) {
@@ -92,9 +93,11 @@ export async function expandGlob(
           stat(childAbs).then(
             (st) => {
               if (st.isFile() && matcher(childRel)) parts[slot] = childAbs;
+              return undefined;
             },
             () => {
               // dangling symlink — ignore
+              return undefined;
             },
           ),
         );

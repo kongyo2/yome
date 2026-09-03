@@ -10,24 +10,21 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
 import { rehypeGithubAlerts } from "rehype-github-alerts";
 // oxlint-disable-next-line import/no-unassigned-import
 import "katex/dist/katex.min.css";
-import {
-  highlight,
-  highlightCached,
-  katexMod,
-  mermaidMod,
-} from "../utils/lazy-render";
+import { katexMod } from "../utils/lazy-render";
 import { fetchFileContent, openRelativeFile } from "../hooks/useApi";
 import { isPlainLeftClick } from "../utils/linkClick";
-import { escapeRegExp } from "../utils/regex";
 import { RawToggle } from "./RawToggle";
 import { TocToggle } from "./TocToggle";
 import { CopyButton } from "./CopyButton";
 import { CloseFileButton } from "./CloseFileButton";
+import { CodeBlock, HighlightedView, RawView } from "./CodeBlock";
+import { MermaidBlock } from "./MermaidBlock";
+import { ZoomButton } from "./OverlayButton";
 import {
   resolveLink,
   resolveImageSrc,
@@ -35,9 +32,20 @@ import {
 } from "../utils/resolve";
 import { buildRelativeOpenUrl } from "../utils/groups";
 import { parseFrontmatter } from "../utils/frontmatter";
+import {
+  rehypeStripClobberPrefix,
+  sanitizeSchema,
+  stripInlineMarkdown,
+  urlTransform,
+} from "../utils/markdown";
 import { stripMdxSyntax } from "../utils/mdx";
 import { isMarkdownFile, detectLanguage } from "../utils/filetype";
 import { formatFileLabel } from "../utils/fileLabel";
+import {
+  collectSearchHitMarkers,
+  SEARCH_HIT_COLUMN_OFFSET,
+  type SearchHitMarker,
+} from "../utils/searchHitMarkers";
 import type { ZoomContent } from "./ZoomModal";
 import type { TocHeading } from "./TocPanel";
 import type { Components } from "react-markdown";
@@ -45,46 +53,21 @@ import type { Components } from "react-markdown";
 import "github-markdown-css/github-markdown.css";
 import type { FontSize } from "./FontSizeToggle";
 
-// Strip the `user-content-` prefix that remark-gfm bakes into footnote IDs,
-// so rehype-sanitize can re-add it exactly once (avoiding double-prefixed IDs).
-function rehypeStripClobberPrefix() {
-  const FOOTNOTE_ID_PATTERN = /^user-content-(fn-|fnref-|footnote-label$)/;
-  const PREFIX = "user-content-";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function walk(node: any) {
-    if (node.properties) {
-      const props = node.properties;
-      if (typeof props.id === "string" && FOOTNOTE_ID_PATTERN.test(props.id)) {
-        props.id = props.id.slice(PREFIX.length);
-      }
-    }
-    if (node.children) {
-      for (const child of node.children) {
-        if (child.type === "element") walk(child);
-      }
-    }
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (tree: any) => {
-    walk(tree);
-  };
-}
-
-// Extend default GitHub-compatible schema to allow style/align attributes used in raw HTML
-const sanitizeSchema = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    span: [...(defaultSchema.attributes?.["span"] || []), "style"],
-    div: [...(defaultSchema.attributes?.["div"] || []), "style", "align"],
-  },
-};
+const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
 
 type KatexPlugin = (typeof import("rehype-katex"))["default"];
 // Shared across viewer instances: once rehype-katex has loaded, later math
 // documents render synchronously on first paint just like the old static
 // import did.
 let katexPluginCache: KatexPlugin | null = null;
+
+function scrollTo(target: Element): void {
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({
+    behavior: reduced ? "auto" : "smooth",
+    block: "start",
+  });
+}
 
 interface MarkdownViewerProps {
   fileId: string;
@@ -111,487 +94,6 @@ interface MarkdownViewerProps {
   searchQuery?: string | null;
 }
 
-interface SearchHitMarker {
-  top: number;
-  height: number;
-}
-
-const SEARCH_HIT_COLUMN_OFFSET = -24;
-
-function collectSearchHitMarkers(
-  root: HTMLElement,
-  query: string,
-): SearchHitMarker[] {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  const pattern = new RegExp(escapeRegExp(trimmed), "gi");
-  const articleRect = root.getBoundingClientRect();
-  const markers = new Map<string, SearchHitMarker>();
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (
-        parent == null ||
-        parent.closest("script, style, .frontmatter-block") != null ||
-        node.textContent == null ||
-        node.textContent.trim() === ""
-      ) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      pattern.lastIndex = 0;
-      return pattern.test(node.textContent)
-        ? NodeFilter.FILTER_ACCEPT
-        : NodeFilter.FILTER_REJECT;
-    },
-  });
-
-  let current = walker.nextNode();
-  while (current != null) {
-    if (current instanceof Text) {
-      const text = current.textContent ?? "";
-      pattern.lastIndex = 0;
-      for (const match of text.matchAll(pattern)) {
-        const start = match.index ?? 0;
-        const end = start + match[0].length;
-        const range = document.createRange();
-        range.setStart(current, start);
-        range.setEnd(current, end);
-        const [rect] = Array.from(range.getClientRects());
-        if (rect != null && rect.height > 0 && rect.width > 0) {
-          const top = rect.top - articleRect.top;
-          const height = rect.height;
-          const key = `${Math.round(top)}:${Math.round(height)}`;
-          markers.set(key, {
-            top,
-            height,
-          });
-        }
-      }
-    }
-    current = walker.nextNode();
-  }
-
-  return [...markers.values()].sort((a, b) => a.top - b.top);
-}
-
-// Best-effort removal of inline markdown markup so a raw heading string can
-// be compared against rendered DOM textContent (e.g. "Install `yome`" vs
-// "Install yome").
-function stripInlineMarkdown(text: string): string {
-  return text
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links and images
-    .replace(/`([^`]*)`/g, "$1") // inline code
-    .replace(/(\*\*|__)(.*?)\1/g, "$2") // bold
-    .replace(/(\*|_)(.*?)\1/g, "$2") // emphasis
-    .replace(/~~(.*?)~~/g, "$1") // strikethrough
-    .trim();
-}
-
-function getMermaidTheme(): "dark" | "default" {
-  return document.documentElement.getAttribute("data-theme") === "dark"
-    ? "dark"
-    : "default";
-}
-
-let mermaidCounter = 0;
-let mermaidQueue: Promise<void> = Promise.resolve();
-
-function cleanupMermaidErrors() {
-  document.querySelectorAll("[id^='dmermaid-']").forEach((el) => el.remove());
-}
-
-async function renderMermaid(
-  code: string,
-  theme: "dark" | "default",
-  width?: number,
-): Promise<string> {
-  let resolve: (svg: string) => void;
-  let reject: (err: unknown) => void;
-  const result = new Promise<string>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-
-  mermaidQueue = mermaidQueue.then(async () => {
-    const id = `mermaid-${++mermaidCounter}`;
-    const container = document.createElement("div");
-    container.style.position = "absolute";
-    container.style.left = "-9999px";
-    container.style.top = "-9999px";
-    container.style.width = `${width && width > 0 ? width : 800}px`;
-    document.body.appendChild(container);
-    try {
-      // mermaid is loaded on first use; initialize() runs inside the queue
-      // so each queued render still sees the theme it was requested with.
-      const mermaid = (await mermaidMod()).default;
-      mermaid.initialize({ startOnLoad: false, theme });
-      const { svg } = await mermaid.render(id, code, container);
-      resolve!(svg);
-      return undefined;
-    } catch (err) {
-      reject!(err);
-      return undefined;
-    } finally {
-      container.remove();
-      cleanupMermaidErrors();
-    }
-  });
-
-  return result;
-}
-
-export function MermaidBlock({
-  code,
-  onZoom,
-}: {
-  code: string;
-  onZoom?: (content: ZoomContent) => void;
-}) {
-  const [svg, setSvg] = useState("");
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const doRender = () => {
-      const width = containerRef.current?.offsetWidth;
-      renderMermaid(code, getMermaidTheme(), width)
-        .then((renderedSvg) => {
-          if (!cancelled) setSvg(renderedSvg);
-          return undefined;
-        })
-        .catch(() => {
-          if (!cancelled) setSvg("");
-        });
-    };
-
-    doRender();
-
-    // Re-render on theme change
-    const observer = new MutationObserver(() => doRender());
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-
-    return () => {
-      cancelled = true;
-      observer.disconnect();
-    };
-  }, [code]);
-
-  if (svg) {
-    return (
-      <div ref={containerRef} className="relative group">
-        <div
-          className="overflow-x-auto"
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
-        {onZoom && (
-          <ZoomButton
-            onClick={() => onZoom({ type: "svg", svg })}
-            position="right-18"
-          />
-        )}
-        <MermaidImageCopyButton svg={svg} />
-        <CodeBlockCopyButton code={code} themed />
-      </div>
-    );
-  }
-  return (
-    <div ref={containerRef} className="relative group">
-      <pre>
-        <code>{code}</code>
-      </pre>
-      <CodeBlockCopyButton code={code} />
-    </div>
-  );
-}
-
-function MermaidImageCopyButton({ svg }: { svg: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  const handleCopy = async () => {
-    try {
-      // Pass the Blob promise directly to ClipboardItem so clipboard.write() is
-      // invoked synchronously inside the user gesture. Awaiting the blob first
-      // lets the transient user activation expire on Chrome and breaks the
-      // user-gesture requirement on Safari/WebKit, both surfacing as a silent
-      // no-op click.
-      await navigator.clipboard.write([
-        new ClipboardItem({ "image/png": svgToPngBlob(svg) }),
-      ]);
-      setCopied(true);
-    } catch (err) {
-      console.error("mermaid copy image failed", err);
-    }
-  };
-
-  return (
-    <button
-      className={`absolute right-10 top-2 flex items-center justify-center rounded-md p-1 cursor-pointer transition-all duration-150 border ${themedButtonStyle} ${copied ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-      onClick={handleCopy}
-      title="Copy image"
-    >
-      {copied ? (
-        <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
-        </svg>
-      ) : (
-        <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M16 13.25A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75ZM1.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25Z" />
-          <path
-            d="M0.5 12.75 4.5 5.5 7.5 9 9.5 6.5 15.5 12.75"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinejoin="round"
-          />
-        </svg>
-      )}
-    </button>
-  );
-}
-
-function svgToPngBlob(svgString: string): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    // Mermaid flowchart/stateDiagram labels embed HTML void elements such as
-    // <br> inside <foreignObject>, which the strict "image/svg+xml" parser
-    // rejects silently (documentElement becomes <html> and the width, height,
-    // and viewBox lookups all return null). Parsing as "text/html" is lenient
-    // and still preserves the case of SVG attributes (viewBox,
-    // preserveAspectRatio, etc.). XMLSerializer then normalizes <br> to <br/>
-    // so the resulting data URL loads cleanly as an SVG image.
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(svgString, "text/html");
-    const svgEl = doc.querySelector("svg");
-    if (!svgEl) {
-      reject(new Error("No SVG element found"));
-      return;
-    }
-
-    // Ensure xmlns is present for standalone SVG rendering
-    if (!svgEl.getAttribute("xmlns")) {
-      svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    }
-
-    // Extract dimensions from the SVG element
-    const widthAttr = svgEl.getAttribute("width");
-    const heightAttr = svgEl.getAttribute("height");
-    const viewBox = svgEl.getAttribute("viewBox");
-
-    let width = 0;
-    let height = 0;
-
-    if (widthAttr && heightAttr) {
-      width = parseFloat(widthAttr);
-      height = parseFloat(heightAttr);
-    } else if (viewBox) {
-      const parts = viewBox.split(/[\s,]+/);
-      width = parseFloat(parts[2]);
-      height = parseFloat(parts[3]);
-    }
-
-    if (!width || !height) {
-      reject(new Error("Cannot determine SVG dimensions"));
-      return;
-    }
-
-    // Scale up for high-DPI displays
-    const scale = 4;
-    const serializer = new XMLSerializer();
-    const svgData = serializer.serializeToString(svgEl);
-    const dataUrl =
-      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgData);
-
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = width * scale;
-      canvas.height = height * scale;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        reject(new Error("Failed to get canvas context"));
-        return;
-      }
-      ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob((blob) => {
-        if (blob) {
-          resolve(blob);
-        } else {
-          reject(new Error("Failed to create PNG blob"));
-        }
-      }, "image/png");
-    };
-    img.onerror = () => {
-      reject(new Error("Failed to load SVG image"));
-    };
-    img.src = dataUrl;
-  });
-}
-
-function ZoomButton({
-  onClick,
-  position = "right-2",
-  groupClass = "group-hover:opacity-100",
-}: {
-  onClick: () => void;
-  position?: string;
-  groupClass?: string;
-}) {
-  return (
-    <button
-      className={`absolute ${position} top-2 flex items-center justify-center rounded-md p-1 cursor-pointer transition-all duration-150 border ${themedButtonStyle} opacity-0 ${groupClass}`}
-      onClick={onClick}
-      title="Zoom"
-    >
-      {/* Placeholder icon — will be replaced */}
-      <svg
-        className="size-4"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      >
-        <circle cx="7" cy="7" r="4.5" />
-        <line x1="10.5" y1="10.5" x2="14" y2="14" strokeLinecap="round" />
-        <line x1="5" y1="7" x2="9" y2="7" strokeLinecap="round" />
-        <line x1="7" y1="5" x2="7" y2="9" strokeLinecap="round" />
-      </svg>
-    </button>
-  );
-}
-
-const darkButtonStyle =
-  "border-[#484f58] hover:border-[#8b949e] text-[#8b949e] bg-[#2d333b]";
-const themedButtonStyle =
-  "border-gh-border hover:border-gh-text-secondary text-gh-text-secondary bg-gh-bg-secondary";
-
-function CodeBlockCopyButton({
-  code,
-  themed = false,
-}: {
-  code: string;
-  themed?: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-    } catch {
-      // clipboard API may fail in insecure contexts
-    }
-  };
-
-  const colorStyle = themed ? themedButtonStyle : darkButtonStyle;
-
-  return (
-    <button
-      className={`absolute right-2 top-2 flex items-center justify-center rounded-md p-1 cursor-pointer transition-all duration-150 border ${colorStyle} ${copied ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-      onClick={handleCopy}
-      title="Copy code"
-    >
-      {copied ? (
-        <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z" />
-        </svg>
-      ) : (
-        <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25ZM5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z" />
-        </svg>
-      )}
-    </button>
-  );
-}
-
-// Resolves highlighted HTML for the current code/language pair. The
-// returned HTML is guaranteed to belong to the *current* inputs: a reused
-// component instance whose props just changed falls back to the cache (or
-// the plain fallback) instead of flashing the previous block's output for a
-// frame. Cache hits paint synchronously; misses resolve via lazy shiki with
-// a plaintext fallback for unsupported languages.
-function useHighlightedHtml(code: string, language: string): string {
-  const [rendered, setRendered] = useState(() => ({
-    code,
-    language,
-    html: highlightCached(code, language) ?? "",
-  }));
-
-  useEffect(() => {
-    let cancelled = false;
-    const cached = highlightCached(code, language);
-    if (cached != null) {
-      setRendered({ code, language, html: cached });
-      return () => {
-        cancelled = true;
-      };
-    }
-    highlight(code, language)
-      .then((result) => {
-        if (!cancelled) setRendered({ code, language, html: result });
-        return undefined;
-      })
-      .catch(() => {
-        // Fallback: if language not supported, try plaintext
-        if (!cancelled) {
-          highlight(code, "text")
-            .then((result) => {
-              if (!cancelled) setRendered({ code, language, html: result });
-              return undefined;
-            })
-            .catch(() => {});
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [code, language]);
-
-  if (rendered.code === code && rendered.language === language) {
-    return rendered.html;
-  }
-  return highlightCached(code, language) ?? "";
-}
-
-function CodeBlock({ language, code }: { language: string; code: string }) {
-  const html = useHighlightedHtml(code, language);
-
-  if (html) {
-    return (
-      <div className="relative group">
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-        <CodeBlockCopyButton code={code} />
-      </div>
-    );
-  }
-  return (
-    <div className="relative group">
-      <pre>
-        <code>{code}</code>
-      </pre>
-      <CodeBlockCopyButton code={code} />
-    </div>
-  );
-}
-
 function FrontmatterBlock({ yaml }: { yaml: string }) {
   return (
     <details open className="mb-4">
@@ -603,34 +105,6 @@ function FrontmatterBlock({ yaml }: { yaml: string }) {
       </div>
     </details>
   );
-}
-
-function HighlightedView({
-  content,
-  language,
-}: {
-  content: string;
-  language: string;
-}) {
-  const html = useHighlightedHtml(content, language);
-
-  if (html) {
-    return (
-      <div
-        className="[&_pre]:!rounded-none"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
-  }
-  return (
-    <pre>
-      <code>{content}</code>
-    </pre>
-  );
-}
-
-function RawView({ content }: { content: string }) {
-  return <HighlightedView content={content} language="markdown" />;
 }
 
 export function MarkdownViewer({
@@ -762,19 +236,13 @@ export function MarkdownViewer({
                     alt: alt ?? undefined,
                   })
                 }
-                position="right-1"
+                position="right-1 top-2"
                 groupClass="group-hover/img:opacity-100"
               />
             </span>
           );
         }
-        return (
-          <img
-            src={resolveImageSrc(src, activeGroup, fileId)}
-            alt={alt}
-            {...props}
-          />
-        );
+        return <img src={resolvedSrc} alt={alt} {...props} />;
       },
       a: ({ node: _node, href, children, ...props }) => {
         const resolved = resolveLink(href, activeGroup, fileId);
@@ -801,13 +269,7 @@ export function MarkdownViewer({
                   const target = document.getElementById(id);
                   if (target) {
                     e.preventDefault();
-                    const reduced = window.matchMedia(
-                      "(prefers-reduced-motion: reduce)",
-                    ).matches;
-                    target.scrollIntoView({
-                      behavior: reduced ? "auto" : "smooth",
-                      block: "start",
-                    });
+                    scrollTo(target);
                     history.pushState(null, "", href);
                   }
                 }}
@@ -935,6 +397,7 @@ export function MarkdownViewer({
             ...(needsMath && katexPlugin ? [katexPlugin] : []),
           ]}
           components={components}
+          urlTransform={urlTransform}
         >
           {md}
         </Markdown>
@@ -957,8 +420,7 @@ export function MarkdownViewer({
   useEffect(() => {
     const newHeadings: TocHeading[] = [];
     if (!isRawView && articleRef.current) {
-      const els = articleRef.current.querySelectorAll("h1, h2, h3, h4, h5, h6");
-      for (const el of els) {
+      for (const el of articleRef.current.querySelectorAll(HEADING_SELECTOR)) {
         if (el.id) {
           newHeadings.push({
             id: el.id,
@@ -996,15 +458,11 @@ export function MarkdownViewer({
     // The server sends the raw markdown heading text; the DOM contains the
     // rendered text (inline markup stripped). Normalize both for comparison.
     const wanted = stripInlineMarkdown(scrollToHeading);
-    const headings = articleRef.current.querySelectorAll(
-      "h1, h2, h3, h4, h5, h6",
-    );
+    const headings = articleRef.current.querySelectorAll(HEADING_SELECTOR);
     const target = Array.from(headings).find(
       (el) => (el.textContent ?? "").trim() === wanted,
     );
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (target) scrollTo(target);
     // Always consume the pending heading so it cannot scroll a file opened
     // later by coincidence of matching text.
     onScrolledToHeading?.();
@@ -1026,15 +484,7 @@ export function MarkdownViewer({
         /* malformed encoding — give up */
       }
     }
-    if (target) {
-      const reduced = window.matchMedia(
-        "(prefers-reduced-motion: reduce)",
-      ).matches;
-      target.scrollIntoView({
-        behavior: reduced ? "auto" : "smooth",
-        block: "start",
-      });
-    }
+    if (target) scrollTo(target);
     // Always consume the pending anchor so it cannot scroll a file rendered
     // later by coincidence of a matching id.
     onScrolledToAnchor?.();
@@ -1083,7 +533,7 @@ export function MarkdownViewer({
     }
     // The first heading is stable for this render, so query it once and reuse it
     // across scroll/resize updates instead of re-querying on every frame.
-    const heading = article.querySelector("h1, h2, h3, h4, h5, h6");
+    const heading = article.querySelector(HEADING_SELECTOR);
     if (!heading) {
       // Nothing to fold in: the label is already just the file name.
       setShowFullLabel(false);

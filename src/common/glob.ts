@@ -78,6 +78,7 @@ async function collectDirs(dir: string): Promise<string[]> {
     tasks.push(
       collectDirs(join(dir, e.name)).then((r) => {
         parts[slot] = r;
+        return undefined;
       }),
     );
   }
@@ -115,6 +116,7 @@ async function collectFiles(dir: string): Promise<string[]> {
       tasks.push(
         collectFiles(abs).then((r) => {
           parts[slot] = r;
+          return undefined;
         }),
       );
     } else if (e.isFile()) {
@@ -127,9 +129,11 @@ async function collectFiles(dir: string): Promise<string[]> {
         stat(abs).then(
           (st) => {
             if (st.isFile()) parts[slot] = abs;
+            return undefined;
           },
           () => {
             // dangling symlink — ignore
+            return undefined;
           },
         ),
       );

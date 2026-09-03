@@ -1,9 +1,10 @@
 import { State } from "../server/state.js";
 import { createServer } from "../server/http.js";
 import { save as saveBackup } from "../backup/index.js";
-import { buildDeeplink, type DeeplinkEntry } from "./display.js";
+import { buildDeeplink, serverUrl, type DeeplinkEntry } from "./display.js";
 import { logger } from "../logfile/index.js";
 import { DefaultGroup } from "../server/group.js";
+import type { UploadedFileData } from "../common/restore.js";
 
 export { readRestoreFile, writeRestoreFile } from "../common/restore.js";
 
@@ -13,7 +14,7 @@ export interface StartServerOpts {
   port: number;
   filesByGroup: Map<string, string[]>;
   patternsByGroup: Map<string, string[]>;
-  uploadedFiles: Array<{ name: string; content: string; group: string }>;
+  uploadedFiles: UploadedFileData[];
   noOpen: boolean;
   target: string;
   disableBackup?: boolean;
@@ -25,17 +26,20 @@ export interface ServerRunResult {
   restartRequested?: string;
 }
 
-export async function startServer(
+// seedState loads the initial session into a fresh State and returns the
+// deeplinks for everything that was accepted. Throws when every plain file
+// was rejected and nothing else could stand in for it.
+async function seedState(
+  state: State,
   opts: StartServerOpts,
-): Promise<ServerRunResult> {
-  const state = new State();
-
-  if (!opts.disableBackup) {
-    // Return the promise so State can await the final flush during shutdown.
-    state.enableBackup((data) => saveBackup(opts.port, data));
-  }
-
+): Promise<DeeplinkEntry[]> {
   const deeplinks: DeeplinkEntry[] = [];
+  const push = (group: string, id: string, path: string) =>
+    deeplinks.push({
+      url: buildDeeplink(opts.addr, group, id, DefaultGroup),
+      path,
+    });
+
   let totalFiles = 0;
   let skippedFiles = 0;
   for (const [group, files] of opts.filesByGroup) {
@@ -43,10 +47,7 @@ export async function startServer(
       totalFiles++;
       try {
         const entry = state.addFile(f, group);
-        deeplinks.push({
-          url: buildDeeplink(opts.addr, group, entry.id, DefaultGroup),
-          path: entry.path,
-        });
+        push(group, entry.id, entry.path);
       } catch (err) {
         skippedFiles++;
         logger.warn("skipping file", { path: f, error: String(err) });
@@ -59,12 +60,7 @@ export async function startServer(
       try {
         const entries = await state.addPattern(pat, group);
         patternsAdded++;
-        for (const entry of entries) {
-          deeplinks.push({
-            url: buildDeeplink(opts.addr, group, entry.id, DefaultGroup),
-            path: entry.path,
-          });
-        }
+        for (const entry of entries) push(group, entry.id, entry.path);
       } catch (err) {
         logger.warn("failed to add pattern", {
           pattern: pat,
@@ -73,17 +69,47 @@ export async function startServer(
       }
     }
   }
+  let uploadsAdded = 0;
   for (const uf of opts.uploadedFiles) {
-    state.addUploadedFile(uf.name, uf.content, uf.group);
+    try {
+      state.addUploadedFile(uf.name, uf.content, uf.group);
+      uploadsAdded++;
+    } catch (err) {
+      // A corrupt entry in a saved session must not block the whole start.
+      logger.warn("skipping uploaded file", {
+        name: uf.name,
+        error: String(err),
+      });
+    }
   }
 
   if (
     totalFiles > 0 &&
     skippedFiles === totalFiles &&
     patternsAdded === 0 &&
-    opts.uploadedFiles.length === 0
+    uploadsAdded === 0
   ) {
     throw new Error(`all ${totalFiles} file(s) were skipped`);
+  }
+  return deeplinks;
+}
+
+export async function startServer(
+  opts: StartServerOpts,
+): Promise<ServerRunResult> {
+  const state = new State();
+
+  if (!opts.disableBackup) {
+    // Return the promise so State can await the final flush during shutdown.
+    state.enableBackup((data) => saveBackup(opts.port, data));
+  }
+
+  let deeplinks: DeeplinkEntry[];
+  try {
+    deeplinks = await seedState(state, opts);
+  } catch (err) {
+    await abandon(state);
+    throw err;
   }
 
   const server = createServer(state);
@@ -91,6 +117,7 @@ export async function startServer(
   return await new Promise<ServerRunResult>((resolve, reject) => {
     let restartFile = "";
     let isShuttingDown = false;
+    let listening = false;
 
     const shutdown = async (restoreFile: string | null) => {
       if (isShuttingDown) return;
@@ -131,18 +158,35 @@ export async function startServer(
     process.on("SIGINT", handleSig);
     process.on("SIGTERM", handleSig);
 
+    // Failed to bind (typically EADDRINUSE). Nothing was served, so tear
+    // the state down without flushing a backup: the instance that does own
+    // the port must keep its own saved session. The file watcher is closed
+    // too — its handles would otherwise keep the process alive forever
+    // after the error was reported.
+    const failListen = async (err: Error) => {
+      isShuttingDown = true;
+      process.off("SIGINT", handleSig);
+      process.off("SIGTERM", handleSig);
+      await abandon(state);
+      reject(
+        new Error(`cannot listen on ${opts.addr}: ${err.message}`, {
+          cause: err,
+        }),
+      );
+    };
+
     server.on("error", (err) => {
-      if (!isShuttingDown) reject(err);
+      if (isShuttingDown) return;
+      if (listening) reject(err);
+      else void failListen(err);
     });
 
     server.listen(opts.port, opts.host, () => {
+      listening = true;
       logger.info("serving", { url: `http://${opts.addr}` });
       if (opts.onReady) opts.onReady(deeplinks);
       if (!opts.noOpen) {
-        const url =
-          opts.target === DefaultGroup
-            ? `http://${opts.addr}`
-            : `http://${opts.addr}/${encodeURIComponent(opts.target)}`;
+        const url = serverUrl(opts.addr, opts.target, DefaultGroup);
         import("open")
           .then(({ default: open }) => open(url))
           .catch((err) =>
@@ -151,4 +195,11 @@ export async function startServer(
       }
     });
   });
+}
+
+// abandon releases everything a State holds (watcher handles, timers,
+// pending backup) for a server that never served a request.
+async function abandon(state: State): Promise<void> {
+  state.closeAllSubscribers();
+  await state.discardBackup();
 }

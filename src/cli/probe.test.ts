@@ -5,6 +5,8 @@ import { State } from "../server/state.js";
 import { createServer } from "../server/http.js";
 import { Version } from "../version.js";
 import {
+  DEAD_CHILD_GRACE_MS,
+  ServerConflictError,
   httpGetJson,
   httpRequestJson,
   probeServer,
@@ -68,6 +70,43 @@ describe("waitForReady", () => {
   it("resolves immediately when server is up", async () => {
     const status = await waitForReady(addr, 2000);
     expect(status?.version).toBe(Version);
+  });
+
+  it("accepts the server when its pid matches the spawned child", async () => {
+    const status = await waitForReady(addr, 2000, {
+      childPid: process.pid,
+      childExited: () => false,
+    });
+    expect(status.pid).toBe(process.pid);
+  });
+
+  it("reports a conflict when another yome server owns the port", async () => {
+    const err = await waitForReady(addr, 2000, {
+      childPid: process.pid + 100_000,
+      childExited: () => true,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerConflictError);
+    expect((err as ServerConflictError).status.pid).toBe(process.pid);
+    expect((err as ServerConflictError).message).toContain(String(process.pid));
+  });
+
+  it("fails fast once the child is dead instead of waiting out the timeout", async () => {
+    const start = Date.now();
+    await expect(
+      waitForReady("127.0.0.1:1", 10_000, {
+        childPid: 424242,
+        childExited: () => true,
+      }),
+    ).rejects.toThrow(/exited unexpectedly/);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(DEAD_CHILD_GRACE_MS - 50);
+    expect(elapsed).toBeLessThan(5000);
+  });
+
+  it("mentions a possible port conflict when nothing ever answers", async () => {
+    await expect(waitForReady("127.0.0.1:1", 300)).rejects.toThrow(
+      /did not become ready.*port may be in use/,
+    );
   });
 });
 

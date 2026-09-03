@@ -1,6 +1,6 @@
 {
   "name": "@kongyo2/yome",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "Markdown viewer that opens .md files in a browser with live-reload",
   "keywords": [
     "markdown",
@@ -55,19 +55,19 @@
   },
   "dependencies": {
     "chokidar": "^4.0.3",
-    "commander": "^14.0.1",
-    "open": "^10.2.0",
+    "commander": "^14.0.3",
+    "open": "^11.0.2",
     "picocolors": "^1.1.1",
-    "picomatch": "^4.0.4"
+    "picomatch": "^4.0.7"
   },
   "devDependencies": {
-    "@types/node": "^24.10.4",
-    "@types/picomatch": "^4.0.2",
-    "esbuild": "^0.28.1",
-    "oxlint": "^1.70.0",
-    "prettier": "^3.4.2",
-    "tsx": "^4.20.6",
-    "typescript": "~5.9.3",
-    "vitest": "^2.1.9"
+    "@types/node": "^24.13.3",
+    "@types/picomatch": "^4.0.3",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.81.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "~7.0.2",
+    "vitest": "^4.1.11"
   }
 }

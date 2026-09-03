@@ -18,11 +18,14 @@ import {
   buildDeeplink,
   deeplinkDisplayNames,
   displayNames,
+  serverUrl,
   writeJson,
   type DeeplinkEntry,
 } from "./display.js";
 import { readRestoreFile, writeRestoreFile } from "../common/restore.js";
-import type { RestoreData } from "../backup/index.js";
+import type { RestoreData, UploadedFileData } from "../common/restore.js";
+import type { ProbeStatus } from "./probe.js";
+import type { PostBatch } from "./client.js";
 
 // Modules that pull expensive-to-compile node builtins (node:http,
 // node:child_process, node:net, node:readline) or the server subtree are
@@ -43,6 +46,8 @@ const serverRunnerMod = () =>
   (serverRunnerModP ??= import("./server-runner.js"));
 
 const DEFAULT_PORT = 6275;
+// How long a CLI invocation waits for the server it spawned to answer.
+const READY_TIMEOUT_MS = 10_000;
 
 interface Flags {
   target: string;
@@ -65,6 +70,37 @@ interface Flags {
   json: boolean;
   yes: boolean;
   dangerouslyAllowRemoteAccess: boolean;
+}
+
+// A Session is everything a server should be serving. The same shape is
+// seeded into an in-process server, written to a restore file for a
+// background one, or posted to a server that is already running.
+type Session = PostBatch;
+
+function sessionFor(
+  group: string,
+  files: string[],
+  patterns: string[],
+  uploadedFiles: UploadedFileData[],
+): Session {
+  return {
+    filesByGroup: new Map([[group, files]]),
+    patternsByGroup: new Map(patterns.length > 0 ? [[group, patterns]] : []),
+    uploadedFiles,
+  };
+}
+
+function logFileHint(port: number): string {
+  return `see yome-${port}.log under the state dir`;
+}
+
+// requireTarget validates the --target flag, returning its normalized form.
+function requireTarget(target: string): string {
+  const { name, error } = resolveGroupName(target);
+  if (error) {
+    throw new Error(`invalid target group name "${target}": ${error.message}`);
+  }
+  return name;
 }
 
 async function promptYesNo(
@@ -127,12 +163,40 @@ function emitServeOutput(
   }
 }
 
+function deeplinksFromStatus(
+  addr: string,
+  status: ProbeStatus,
+): DeeplinkEntry[] {
+  const deeplinks: DeeplinkEntry[] = [];
+  for (const g of status.groups ?? []) {
+    for (const f of g.files) {
+      deeplinks.push({
+        url: buildDeeplink(addr, g.name, f.id, DefaultGroup),
+        path: f.path,
+        name: f.name,
+      });
+    }
+  }
+  return deeplinks;
+}
+
+async function removeFileQuietly(path: string): Promise<void> {
+  try {
+    const { rm } = await import("node:fs/promises");
+    await rm(path, { force: true });
+  } catch {
+    // best-effort
+  }
+}
+
 async function runMain(args: string[], flags: Flags): Promise<number> {
   // Runs that will host the server in-process are known up front; warm the
   // server chunk in parallel with the argument/probe work below.
   if (flags.foreground || flags.restore !== "") void serverRunnerMod();
 
-  // setup log file unless we're in foreground+restore-less mode (we still want logs for actual server runs)
+  // Set up the log file unless this is a foreground run without --restore
+  // (interactive; stderr is the better place). Detached children always log
+  // to the file: their stdio is discarded.
   if (!flags.foreground || flags.restore !== "") {
     try {
       setupLogfile(flags.port);
@@ -149,154 +213,189 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     ? `[${bind}]:${flags.port}`
     : `${bind}:${flags.port}`;
 
-  if (flags.clear) {
-    const { probeServer, waitForReady, waitForServerDown, PROBE_TIMEOUT_FAST } =
-      await probeMod();
-    let wasServerRunning = false;
-    try {
-      await probeServer(addr, PROBE_TIMEOUT_FAST);
-      wasServerRunning = true;
-    } catch {
-      // not running
-    }
-    const hasBackup = backupExists(flags.port);
-    if (!wasServerRunning && !hasBackup) {
-      process.stderr.write(`yome: no saved session for port ${flags.port}\n`);
-      return 0;
-    }
-    if (!flags.yes) {
-      const ok = await promptYesNo(
-        `yome: clear saved session for port ${flags.port}? [Y/n] `,
-        true,
-      );
-      if (!ok) {
-        process.stderr.write("yome: canceled\n");
-        return 0;
-      }
-    }
-    if (wasServerRunning) {
-      const { doShutdown } = await clientMod();
-      await doShutdown(addr);
-      await waitForServerDown(addr);
-    }
-    // Remove unconditionally: the dying server's final backup flush may have
-    // just created a backup that did not exist when hasBackup was sampled
-    // (e.g. the session changed within the 1s debounce window).
-    await backupRemove(flags.port);
-    if (wasServerRunning) {
-      const { spawnDetached } = await backgroundMod();
-      const proc = spawnDetached({
-        bind,
-        host: bind,
-        port: flags.port,
-        dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
-        // The detached child cannot answer the non-loopback bind prompt
-        // (its stdin is ignored); the user already confirmed this bind for
-        // the server we just shut down.
-        yes: true,
-      });
-      await waitForReady(addr, 10_000, () =>
-        proc.exited()
-          ? `restarted server exited before becoming ready (see yome-${flags.port}.log under the state dir)`
-          : null,
-      );
-      process.stderr.write(
-        `yome: cleared session and restarted server on port ${flags.port}\n`,
-      );
-    } else {
-      process.stderr.write(
-        `yome: cleared saved session for port ${flags.port}\n`,
-      );
-    }
-    return 0;
-  }
-
+  if (flags.clear) return await runClear(flags, addr, bind);
   if (flags.status) {
     const { doStatus } = await clientMod();
     return await doStatus(flags.json);
   }
+  if (flags.shutdown) return await runControl("shutdown", flags, addr);
+  if (flags.restart) return await runControl("restart", flags, addr);
+  if (flags.unwatch) return await runUnwatch(args, flags, addr);
+  if (flags.close) return await runClose(args, flags, addr);
+  if (flags.restore !== "") return await runRestore(flags, addr, bind);
+  return await runServe(args, flags, addr, bind);
+}
 
-  if (flags.shutdown) {
-    const { doShutdown, shutdownOrRestartAll } = await clientMod();
-    if (!flags.portExplicit) {
-      return await shutdownOrRestartAll("shutdown");
+// --clear: forget the saved session for the port. A running server is shut
+// down first and respawned empty, so the clear cannot be undone by its
+// final backup flush.
+async function runClear(
+  flags: Flags,
+  addr: string,
+  bind: string,
+): Promise<number> {
+  const {
+    probeServer,
+    waitForReady,
+    waitForServerDown,
+    ServerConflictError,
+    PROBE_TIMEOUT_FAST,
+  } = await probeMod();
+  let wasServerRunning = false;
+  try {
+    await probeServer(addr, PROBE_TIMEOUT_FAST);
+    wasServerRunning = true;
+  } catch {
+    // not running
+  }
+  const hasBackup = backupExists(flags.port);
+  if (!wasServerRunning && !hasBackup) {
+    process.stderr.write(`yome: no saved session for port ${flags.port}\n`);
+    return 0;
+  }
+  if (!flags.yes) {
+    const ok = await promptYesNo(
+      `yome: clear saved session for port ${flags.port}? [Y/n] `,
+      true,
+    );
+    if (!ok) {
+      process.stderr.write("yome: canceled\n");
+      return 0;
     }
+  }
+  if (wasServerRunning) {
+    const { doShutdown } = await clientMod();
     await doShutdown(addr);
-    return 0;
+    await waitForServerDown(addr);
   }
-
-  if (flags.restart) {
-    const { doRestart, shutdownOrRestartAll } = await clientMod();
-    if (!flags.portExplicit) {
-      return await shutdownOrRestartAll("restart");
-    }
-    await doRestart(addr);
-    return 0;
-  }
-
-  if (flags.unwatch) {
-    if (flags.watch) throw new Error("cannot use --unwatch with --watch");
-    if (args.length === 0)
-      throw new Error(
-        "--unwatch requires a glob pattern or directory argument",
-      );
-    const { name: resolvedTarget, error } = resolveGroupName(flags.target);
-    if (error)
-      throw new Error(
-        `invalid target group name "${flags.target}": ${error.message}`,
-      );
-    const { doUnwatch, fetchRegisteredPatterns } = await clientMod();
-    const patterns = await resolveUnwatchArgs(args, flags.recursive, () =>
-      fetchRegisteredPatterns(addr, resolvedTarget),
+  // Remove unconditionally: the dying server's final backup flush may have
+  // just created a backup that did not exist when hasBackup was sampled
+  // (e.g. the session changed within the 1s debounce window).
+  await backupRemove(flags.port);
+  if (!wasServerRunning) {
+    process.stderr.write(
+      `yome: cleared saved session for port ${flags.port}\n`,
     );
-    await doUnwatch(addr, patterns, resolvedTarget);
     return 0;
   }
 
-  if (flags.close) {
-    if (flags.watch) throw new Error("cannot use --close with --watch");
-    if (args.length === 0)
-      throw new Error("--close requires at least one file argument");
-    const { name: resolvedTarget, error } = resolveGroupName(flags.target);
-    if (error)
-      throw new Error(
-        `invalid target group name "${flags.target}": ${error.message}`,
-      );
-    const { doClose } = await clientMod();
-    const { closed, errors } = await doClose(addr, args, resolvedTarget);
-    if (closed.length > 0) {
-      const names = displayNames(closed);
-      for (const n of names) process.stdout.write(`  ${n}\n`);
+  const { spawnDetached } = await backgroundMod();
+  const proc = spawnDetached({
+    bind,
+    host: bind,
+    port: flags.port,
+    dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+    // The detached child cannot answer the non-loopback bind prompt
+    // (its stdin is ignored); the user already confirmed this bind for
+    // the server we just shut down.
+    yes: true,
+  });
+  try {
+    await waitForReady(addr, READY_TIMEOUT_MS, {
+      childPid: proc.pid,
+      childExited: proc.exited,
+    });
+  } catch (err) {
+    if (err instanceof ServerConflictError) {
+      // Someone else grabbed the port between shutdown and respawn. The
+      // session is cleared and a server is serving, which is what --clear
+      // promises; just say who ended up owning it.
       process.stderr.write(
-        `yome: closed ${closed.length} file(s) from http://${addr}\n`,
+        `yome: cleared saved session for port ${flags.port}; another yome server (pid ${err.status.pid}) now serves it\n`,
       );
+      return 0;
     }
-    if (errors.length > 0) {
-      for (const e of errors) process.stderr.write(`yome: ${e.message}\n`);
-      return 1;
-    }
-    return 0;
-  }
-
-  if (flags.restore !== "") {
-    const rd = await readRestoreFile(flags.restore);
-    const { mapFromRecord } = await helpersMod();
-    return await runStartServer(
-      flags,
-      addr,
-      bind,
-      mapFromRecord(rd.groups ?? {}),
-      mapFromRecord(rd.patterns ?? {}),
-      rd.uploadedFiles ?? [],
-    );
-  }
-
-  const { name: resolved, error: terr } = resolveGroupName(flags.target);
-  if (terr)
     throw new Error(
-      `invalid target group name "${flags.target}": ${terr.message}`,
+      `${(err as Error).message} (spawned pid ${proc.pid}; ${logFileHint(flags.port)})`,
+      { cause: err },
     );
-  flags.target = resolved;
+  }
+  process.stderr.write(
+    `yome: cleared session and restarted server on port ${flags.port}\n`,
+  );
+  return 0;
+}
+
+// --shutdown / --restart: act on the given port, or on every discovered
+// instance when --port was not given explicitly.
+async function runControl(
+  action: "shutdown" | "restart",
+  flags: Flags,
+  addr: string,
+): Promise<number> {
+  const { doShutdown, doRestart, shutdownOrRestartAll } = await clientMod();
+  if (!flags.portExplicit) return await shutdownOrRestartAll(action);
+  if (action === "shutdown") await doShutdown(addr);
+  else await doRestart(addr);
+  return 0;
+}
+
+async function runUnwatch(
+  args: string[],
+  flags: Flags,
+  addr: string,
+): Promise<number> {
+  if (flags.watch) throw new Error("cannot use --unwatch with --watch");
+  if (args.length === 0) {
+    throw new Error("--unwatch requires a glob pattern or directory argument");
+  }
+  const target = requireTarget(flags.target);
+  const { doUnwatch, fetchRegisteredPatterns } = await clientMod();
+  const patterns = await resolveUnwatchArgs(args, flags.recursive, () =>
+    fetchRegisteredPatterns(addr, target),
+  );
+  await doUnwatch(addr, patterns, target);
+  return 0;
+}
+
+async function runClose(
+  args: string[],
+  flags: Flags,
+  addr: string,
+): Promise<number> {
+  if (flags.watch) throw new Error("cannot use --close with --watch");
+  if (args.length === 0) {
+    throw new Error("--close requires at least one file argument");
+  }
+  const target = requireTarget(flags.target);
+  const { doClose } = await clientMod();
+  const { closed, errors } = await doClose(addr, args, target);
+  if (closed.length > 0) {
+    for (const n of displayNames(closed)) process.stdout.write(`  ${n}\n`);
+    process.stderr.write(
+      `yome: closed ${closed.length} file(s) from http://${addr}\n`,
+    );
+  }
+  for (const e of errors) process.stderr.write(`yome: ${e.message}\n`);
+  return errors.length > 0 ? 1 : 0;
+}
+
+// --restore (internal): a detached child started by startBackground or a
+// restart picks its session up from the file the parent wrote.
+async function runRestore(
+  flags: Flags,
+  addr: string,
+  bind: string,
+): Promise<number> {
+  const rd = await readRestoreFile(flags.restore);
+  const { mapFromRecord } = await helpersMod();
+  return await runStartServer(flags, addr, bind, {
+    filesByGroup: mapFromRecord(rd.groups ?? {}),
+    patternsByGroup: mapFromRecord(rd.patterns ?? {}),
+    uploadedFiles: rd.uploadedFiles ?? [],
+  });
+}
+
+// The default command: open the given files, patterns, or piped content —
+// in the server already running on the port when there is one, otherwise
+// in a fresh server (restoring the saved session for the port).
+async function runServe(
+  args: string[],
+  flags: Flags,
+  addr: string,
+  bind: string,
+): Promise<number> {
+  flags.target = requireTarget(flags.target);
 
   if (flags.recursive && args.length === 0) {
     throw new Error("--recursive (-R) requires a directory argument");
@@ -319,7 +418,7 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     );
   }
 
-  let stdinData: { name: string; content: string; group: string } | null = null;
+  let stdinData: UploadedFileData | null = null;
   if (isStdinRedirected()) {
     if (args.length > 0)
       throw new Error("cannot use redirected stdin with positional arguments");
@@ -329,194 +428,180 @@ async function runMain(args: string[], flags: Flags): Promise<number> {
     stdinData = { name, content, group: flags.target };
   }
 
-  // No files / patterns / stdin: if server running, just open browser.
+  const { probeServer, PROBE_TIMEOUT_DEFAULT, PROBE_TIMEOUT_FAST } =
+    await probeMod();
   if (files.length === 0 && patterns.length === 0 && !stdinData) {
+    // Nothing to add: with a server running, just open the browser.
     try {
-      const { probeServer, PROBE_TIMEOUT_DEFAULT } = await probeMod();
       await probeServer(addr, PROBE_TIMEOUT_DEFAULT);
       await openBrowser(addr, flags);
       return 0;
     } catch {
-      // continue to start new server
+      // continue to start a new server
     }
-  }
-
-  // Try adding to existing server first. Only fall through to startup when
-  // the probe itself fails (no server running). Errors from the subsequent
-  // API calls must surface so users actually see "binary file rejected"
-  // type problems instead of silently spawning a fresh server.
-  if (stdinData || files.length > 0 || patterns.length > 0) {
-    const { probeServer, PROBE_TIMEOUT_FAST } = await probeMod();
-    let probed: Awaited<ReturnType<typeof probeServer>> | null = null;
+  } else {
+    // Try adding to an existing server first. Only fall through to startup
+    // when the probe itself fails (no server running): errors from the
+    // subsequent API calls must surface so users actually see "binary file
+    // rejected" type problems instead of silently spawning a fresh server.
+    let probed: ProbeStatus | null = null;
     try {
-      probed = await probeServer(addr, PROBE_TIMEOUT_FAST);
+      probed = (await probeServer(addr, PROBE_TIMEOUT_FAST)).status;
     } catch {
       probed = null;
     }
-    if (probed !== null) {
-      const isNewGroup = !probed.groups.includes(flags.target);
-      const deeplinks: DeeplinkEntry[] = [];
-
-      const { postFiles, postPatterns, postUploadedFile } = await clientMod();
-      const pf = await postFiles(addr, flags.target, files);
-      deeplinks.push(...pf.entries);
-      const pp = await postPatterns(addr, flags.target, patterns);
-      deeplinks.push(...pp.entries);
-
-      let stdinUploadErr: Error | null = null;
-      if (stdinData) {
-        try {
-          const e = await postUploadedFile(
-            addr,
-            flags.target,
-            stdinData.name,
-            stdinData.content,
-          );
-          deeplinks.push(e);
-        } catch (err) {
-          stdinUploadErr = err as Error;
-          logger.warn("failed to upload stdin content", { error: String(err) });
-        }
-      }
-      if (
-        stdinData &&
-        files.length === 0 &&
-        patterns.length === 0 &&
-        stdinUploadErr
-      ) {
-        throw stdinUploadErr;
-      }
-
-      let added = pf.succeeded + pp.succeeded;
-      if (stdinData && !stdinUploadErr) added++;
-      logger.info("added to existing server", {
-        files: pf.succeeded,
-        patterns: pp.succeeded,
-        stdin: stdinData != null,
+    if (probed) {
+      return await addToExistingServer(
         addr,
-      });
-      emitServeOutput(addr, deeplinks, false, flags.json);
-      process.stderr.write(`yome: added ${added} item(s) to http://${addr}\n`);
-
-      // Surface real per-file failures.
-      for (const e of pf.errors) {
-        process.stderr.write(`yome: ${e.message}\n`);
-      }
-      for (const e of pp.errors) {
-        process.stderr.write(`yome: ${e.message}\n`);
-      }
-
-      if (isNewGroup || flags.open) await openBrowser(addr, flags);
-      if (pf.errors.length > 0 || pp.errors.length > 0) return 1;
-      return 0;
-    }
-  }
-
-  const filesByGroup = new Map<string, string[]>();
-  filesByGroup.set(flags.target, files);
-  const patternsByGroup = new Map<string, string[]>();
-  if (patterns.length > 0) patternsByGroup.set(flags.target, patterns);
-
-  let mergedFiles = filesByGroup;
-  let mergedPatterns = patternsByGroup;
-  let uploadedFiles: Array<{ name: string; content: string; group: string }> =
-    [];
-
-  const { filterValidRestoreData, isLoopbackBind, mergeGroups } =
-    await helpersMod();
-
-  if (flags.restoreSession) {
-    try {
-      const rd = await backupLoad(flags.port);
-      const filtered = filterValidRestoreData(rd);
-      if (
-        filtered.files.size > 0 ||
-        filtered.patterns.size > 0 ||
-        filtered.uploadedFiles.length > 0
-      ) {
-        logger.info("restoring session from backup", { port: flags.port });
-        process.stderr.write(
-          `yome: restoring previous session for port ${flags.port}\n`,
-        );
-        mergedFiles = mergeGroups(filtered.files, filesByGroup);
-        mergedPatterns = mergeGroups(filtered.patterns, patternsByGroup);
-        uploadedFiles = filtered.uploadedFiles;
-      }
-    } catch (err) {
-      logger.warn("failed to load backup", { error: String(err) });
-    }
-  } else {
-    logger.info("starting ephemeral session (--no-restore-session)", {
-      port: flags.port,
-    });
-  }
-
-  if (stdinData) uploadedFiles.push(stdinData);
-
-  if (!isLoopbackBind(bind)) {
-    logger.warn("binding to non-loopback address", {
-      bind,
-      dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
-    });
-  }
-  if (!isLoopbackBind(bind) && !flags.dangerouslyAllowRemoteAccess) {
-    if (stdinData) {
-      throw new Error(
-        "cannot use redirected stdin with non-loopback bind without --dangerously-allow-remote-access",
+        probed,
+        flags,
+        files,
+        patterns,
+        stdinData,
       );
     }
-    process.stderr.write(
-      pc.bold(pc.yellow("SECURITY WARNING: ")) +
-        pc.yellow(
-          `Binding to ${bind} instead of localhost. yome has no authentication -- remote clients can:`,
-        ) +
-        "\n",
-    );
-    process.stderr.write(
-      pc.yellow("  - Read any file accessible by this user") + "\n",
-    );
-    process.stderr.write(
-      pc.yellow("  - Browse the filesystem via glob patterns") + "\n",
-    );
-    process.stderr.write(
-      pc.yellow("  - Shut down or restart the server") + "\n",
-    );
-    if (!flags.yes) {
-      const ok = await promptYesNo("Continue? [y/N] ");
-      if (!ok) {
-        process.stderr.write("yome: canceled\n");
-        return 0;
-      }
-    }
+  }
+
+  const requested = sessionFor(flags.target, files, patterns, []);
+  const session = await restoreSession(flags, requested);
+  if (stdinData) session.uploadedFiles.push(stdinData);
+
+  if (!(await confirmNonLoopbackBind(flags, bind, stdinData != null))) {
+    return 0;
   }
 
   if (flags.foreground) {
-    return await runStartServer(
-      flags,
-      addr,
-      bind,
-      mergedFiles,
-      mergedPatterns,
-      uploadedFiles,
-    );
+    return await runStartServer(flags, addr, bind, session);
+  }
+  return await startBackground(flags, addr, bind, session);
+}
+
+async function addToExistingServer(
+  addr: string,
+  status: ProbeStatus,
+  flags: Flags,
+  files: string[],
+  patterns: string[],
+  stdinData: UploadedFileData | null,
+): Promise<number> {
+  const isNewGroup = !status.groups.some((g) => g.name === flags.target);
+  const { postBatch } = await clientMod();
+  const result = await postBatch(
+    addr,
+    sessionFor(flags.target, files, patterns, stdinData ? [stdinData] : []),
+  );
+
+  // Piped content was the only item: its failure is the command's failure.
+  if (
+    stdinData &&
+    files.length === 0 &&
+    patterns.length === 0 &&
+    result.errors.length > 0
+  ) {
+    throw new Error(result.errors[0]!.message);
   }
 
-  return await startBackground(
-    flags,
+  logger.info("added to existing server", {
+    files: files.length,
+    patterns: patterns.length,
+    stdin: stdinData != null,
+    added: result.added,
     addr,
-    bind,
-    mergedFiles,
-    mergedPatterns,
-    uploadedFiles,
+  });
+  emitServeOutput(addr, result.entries, false, flags.json);
+  process.stderr.write(
+    `yome: added ${result.added} item(s) to http://${addr}\n`,
   );
+  // Surface real per-item failures.
+  for (const e of result.errors) process.stderr.write(`yome: ${e.message}\n`);
+
+  if (isNewGroup || flags.open) await openBrowser(addr, flags);
+  return result.errors.length > 0 ? 1 : 0;
+}
+
+// restoreSession merges the saved session for the port (restored entries
+// first, requested ones appended, duplicates skipped) unless the user opted
+// out with --no-restore-session.
+async function restoreSession(
+  flags: Flags,
+  requested: Session,
+): Promise<Session> {
+  if (!flags.restoreSession) {
+    logger.info("starting ephemeral session (--no-restore-session)", {
+      port: flags.port,
+    });
+    return requested;
+  }
+  const { filterValidRestoreData, mergeGroups } = await helpersMod();
+  try {
+    const filtered = filterValidRestoreData(await backupLoad(flags.port));
+    if (
+      filtered.files.size > 0 ||
+      filtered.patterns.size > 0 ||
+      filtered.uploadedFiles.length > 0
+    ) {
+      logger.info("restoring session from backup", { port: flags.port });
+      process.stderr.write(
+        `yome: restoring previous session for port ${flags.port}\n`,
+      );
+      return {
+        filesByGroup: mergeGroups(filtered.files, requested.filesByGroup),
+        patternsByGroup: mergeGroups(
+          filtered.patterns,
+          requested.patternsByGroup,
+        ),
+        uploadedFiles: [...filtered.uploadedFiles, ...requested.uploadedFiles],
+      };
+    }
+  } catch (err) {
+    logger.warn("failed to load backup", { error: String(err) });
+  }
+  return requested;
+}
+
+// confirmNonLoopbackBind warns (and prompts, unless --yes or
+// --dangerously-allow-remote-access) before exposing the server beyond the
+// local machine. Returns false when the user declined.
+async function confirmNonLoopbackBind(
+  flags: Flags,
+  bind: string,
+  hasStdin: boolean,
+): Promise<boolean> {
+  const { isLoopbackBind } = await helpersMod();
+  if (isLoopbackBind(bind)) return true;
+  logger.warn("binding to non-loopback address", {
+    bind,
+    dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
+  });
+  if (flags.dangerouslyAllowRemoteAccess) return true;
+  if (hasStdin) {
+    throw new Error(
+      "cannot use redirected stdin with non-loopback bind without --dangerously-allow-remote-access",
+    );
+  }
+  const warn = (line: string) => process.stderr.write(pc.yellow(line) + "\n");
+  process.stderr.write(
+    pc.bold(pc.yellow("SECURITY WARNING: ")) +
+      pc.yellow(
+        `Binding to ${bind} instead of localhost. yome has no authentication -- remote clients can:`,
+      ) +
+      "\n",
+  );
+  warn("  - Read any file accessible by this user");
+  warn("  - Browse the filesystem via glob patterns");
+  warn("  - Shut down or restart the server");
+  if (flags.yes) return true;
+  const ok = await promptYesNo("Continue? [y/N] ");
+  if (!ok) {
+    process.stderr.write("yome: canceled\n");
+    return false;
+  }
+  return true;
 }
 
 async function openBrowser(addr: string, flags: Flags): Promise<void> {
   if (flags.noOpen) return;
-  const url =
-    flags.target === DefaultGroup
-      ? `http://${addr}`
-      : `http://${addr}/${encodeURIComponent(flags.target)}`;
+  const url = serverUrl(addr, flags.target, DefaultGroup);
   try {
     // `open` is loaded lazily: it (and its platform helpers) are only needed
     // when a browser is actually opened, and keeping it out of the static
@@ -532,9 +617,7 @@ async function runStartServer(
   flags: Flags,
   addr: string,
   bind: string,
-  filesByGroup: Map<string, string[]>,
-  patternsByGroup: Map<string, string[]>,
-  uploadedFiles: Array<{ name: string; content: string; group: string }>,
+  session: Session,
 ): Promise<number> {
   // The in-process server (and its chokidar/http dependency subtree) is only
   // required for --foreground / --restore runs; client invocations that talk
@@ -544,9 +627,7 @@ async function runStartServer(
     addr,
     host: bind,
     port: flags.port,
-    filesByGroup,
-    patternsByGroup,
-    uploadedFiles,
+    ...session,
     noOpen: flags.noOpen,
     target: flags.target,
     disableBackup: !flags.restoreSession,
@@ -572,23 +653,22 @@ async function startBackground(
   flags: Flags,
   addr: string,
   bind: string,
-  filesByGroup: Map<string, string[]>,
-  patternsByGroup: Map<string, string[]>,
-  uploadedFiles: Array<{ name: string; content: string; group: string }>,
+  session: Session,
 ): Promise<number> {
   const restoreData: RestoreData = {
-    groups: Object.fromEntries(filesByGroup),
+    groups: Object.fromEntries(session.filesByGroup),
     patterns:
-      patternsByGroup.size > 0 ? Object.fromEntries(patternsByGroup) : {},
-    uploadedFiles,
+      session.patternsByGroup.size > 0
+        ? Object.fromEntries(session.patternsByGroup)
+        : {},
+    uploadedFiles: session.uploadedFiles,
   };
   const restoreFile = await writeRestoreFile(restoreData);
+  const [{ spawnDetached }, { waitForReady, ServerConflictError }] =
+    await Promise.all([backgroundMod(), probeMod()]);
+  let proc;
   try {
-    const [{ spawnDetached }, { waitForReady }] = await Promise.all([
-      backgroundMod(),
-      probeMod(),
-    ]);
-    const proc = spawnDetached({
+    proc = spawnDetached({
       bind,
       host: bind,
       port: flags.port,
@@ -596,39 +676,68 @@ async function startBackground(
       dangerouslyAllowRemoteAccess: flags.dangerouslyAllowRemoteAccess,
       noRestoreSession: !flags.restoreSession,
     });
-    const pid = proc.pid;
-    // Fail fast when the child dies during startup (bad file set, port in
-    // use, …) instead of polling out the full readiness timeout.
-    const status = await waitForReady(addr, 10_000, () =>
-      proc.exited()
-        ? `server process exited before becoming ready (see yome-${flags.port}.log under the state dir)`
-        : null,
-    );
-    const deeplinks: DeeplinkEntry[] = [];
-    if (status) {
-      for (const g of status.groups ?? []) {
-        for (const f of g.files) {
-          deeplinks.push({
-            url: buildDeeplink(addr, g.name, f.id, DefaultGroup),
-            path: f.path,
-            name: f.name,
-          });
-        }
-      }
-    }
-    emitServeOutput(addr, deeplinks, true, flags.json);
-    process.stderr.write(`yome: serving at http://${addr} (pid ${pid})\n`);
-    await openBrowser(addr, flags);
-    return 0;
   } catch (err) {
-    try {
-      const { rm } = await import("node:fs/promises");
-      await rm(restoreFile, { force: true });
-    } catch {
-      // ignore
-    }
+    await removeFileQuietly(restoreFile);
     throw err;
   }
+
+  let status: ProbeStatus;
+  try {
+    status = await waitForReady(addr, READY_TIMEOUT_MS, {
+      childPid: proc.pid,
+      childExited: proc.exited,
+    });
+  } catch (err) {
+    // Remove the restore file only once the child is confirmed dead: a
+    // slow-but-alive child may not have consumed it yet, and an alive child
+    // removes it itself after loading.
+    if (proc.exited()) await removeFileQuietly(restoreFile);
+    if (err instanceof ServerConflictError) {
+      // Lost a concurrent startup race: another yome server owns the port.
+      // Add our files to the winner instead of reporting a false success.
+      return await addToRunningServer(addr, err.status, flags, session);
+    }
+    throw new Error(
+      `${(err as Error).message} (spawned pid ${proc.pid}; ${logFileHint(flags.port)})`,
+      { cause: err },
+    );
+  }
+
+  emitServeOutput(addr, deeplinksFromStatus(addr, status), true, flags.json);
+  process.stderr.write(`yome: serving at http://${addr} (pid ${proc.pid})\n`);
+  await openBrowser(addr, flags);
+  return 0;
+}
+
+// addToRunningServer hands the whole session to a yome server that turned
+// out to own the port while we were starting ours.
+async function addToRunningServer(
+  addr: string,
+  status: ProbeStatus,
+  flags: Flags,
+  session: Session,
+): Promise<number> {
+  logger.info("port already served by another yome instance; adding to it", {
+    addr,
+    pid: status.pid,
+  });
+  const { postBatch } = await clientMod();
+  const result = await postBatch(addr, session);
+  if (result.attempted > 0 && result.added === 0) {
+    const first = result.errors[0]?.message ?? "no item was accepted";
+    throw new Error(
+      `failed to add any items to the yome server at http://${addr}: ${first}`,
+    );
+  }
+  emitServeOutput(addr, result.entries, true, flags.json);
+  process.stderr.write(
+    `yome: another yome server is already running at http://${addr} (pid ${status.pid}); added ${result.added} item(s) to it\n`,
+  );
+  for (const e of result.errors) process.stderr.write(`yome: ${e.message}\n`);
+
+  const isNewGroup = !status.groups.some((g) => g.name === flags.target);
+  if (isNewGroup || flags.open) await openBrowser(addr, flags);
+  return result.errors.length > 0 ? 1 : 0;
 }
 
 const LONG_DESC = `yome is a Markdown viewer that opens .md files in a browser with live-reload.

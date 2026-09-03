@@ -329,6 +329,81 @@ describe("GET /_/api/search", () => {
     const r = await get("/_/api/search");
     expect(r.status).toBe(400);
   });
+  it("rejects non-integer, zero, or negative limit / context values", async () => {
+    const p1 = join(tmp, "a.md");
+    await writeFile(p1, "hello");
+    await postJson("/_/api/groups/default/files", { path: p1 });
+    for (const q of ["limit=0.5", "limit=0", "limit=-1", "limit=abc"]) {
+      const r = await get(`/_/api/search?q=hello&${q}`);
+      expect(r.status, q).toBe(400);
+    }
+    for (const q of ["context=1.5", "context=-1", "context=x"]) {
+      const r = await get(`/_/api/search?q=hello&${q}`);
+      expect(r.status, q).toBe(400);
+    }
+    const zeroCtx = await get("/_/api/search?q=hello&context=0");
+    expect(zeroCtx.status).toBe(200);
+  });
+  it("clamps limit and context to their maximums", async () => {
+    const p1 = join(tmp, "a.md");
+    await writeFile(p1, "hello");
+    await postJson("/_/api/groups/default/files", { path: p1 });
+    const r = await get("/_/api/search?q=hello&limit=99999&context=50");
+    expect(r.status).toBe(200);
+    const data = JSON.parse(r.body);
+    expect(data.limit).toBe(200);
+    expect(data.context).toBe(5);
+  });
+});
+
+describe("request body validation", () => {
+  it("answers 400 (not 500) when the JSON body is not an object", async () => {
+    for (const body of ["null", "[]", "42", '"str"']) {
+      const res = await fetch(baseURL + "/_/api/groups/default/files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      expect(res.status, body).toBe(400);
+    }
+  });
+  it("answers 400 when reorder fileIds is missing or not a string array", async () => {
+    const path = join(tmp, "a.md");
+    await writeFile(path, "# A");
+    await postJson("/_/api/groups/default/files", { path });
+    const missing = await putJson("/_/api/groups/default/reorder", {});
+    expect(missing.status).toBe(400);
+    const wrongType = await putJson("/_/api/groups/default/reorder", {
+      fileIds: [1, 2],
+    });
+    expect(wrongType.status).toBe(400);
+  });
+  it("answers 400 when a pattern request has no pattern", async () => {
+    const add = await postJson("/_/api/patterns", { group: "default" });
+    expect(add.status).toBe(400);
+    expect(add.body).toMatch(/pattern/);
+    const del = await deleteJson("/_/api/patterns", { group: "default" });
+    expect(del.status).toBe(400);
+  });
+  it("answers 400 when open request lacks fileId or path", async () => {
+    const r1 = await postJson("/_/api/groups/default/files/open", {
+      path: "x.md",
+    });
+    expect(r1.status).toBe(400);
+    const r2 = await postJson("/_/api/groups/default/files/open", {
+      fileId: "deadbeef",
+    });
+    expect(r2.status).toBe(400);
+  });
+  it("rejects binary uploaded content with a 400", async () => {
+    const r = await postJson("/_/api/groups/default/files/upload", {
+      name: "image.png",
+      content: "PNG  ",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toContain("binary");
+    expect(JSON.parse((await get("/_/api/groups")).body)).toEqual([]);
+  });
 });
 
 describe("GET /_/api/groups/:group/files/:id/raw/:path", () => {
@@ -356,6 +431,61 @@ describe("GET /_/api/groups/:group/files/:id/raw/:path", () => {
     );
     const r = await get(`/_/api/groups/default/files/${e.id}/raw/..%2Fsecret`);
     expect([400, 403, 404]).toContain(r.status);
+  });
+  it("sends validators and answers 304 to a matching conditional request", async () => {
+    const dir = join(tmp, "doc");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "a.md"), "# A");
+    await writeFile(join(dir, "pic.png"), Buffer.from("PNGDATA"));
+    const e = JSON.parse(
+      (
+        await postJson("/_/api/groups/default/files", {
+          path: join(dir, "a.md"),
+        })
+      ).body,
+    );
+    const url = `${baseURL}/_/api/groups/default/files/${e.id}/raw/pic.png`;
+    const first = await fetch(url);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("content-type")).toBe("image/png");
+    expect(first.headers.get("cache-control")).toBe("no-cache");
+    const etag = first.headers.get("etag");
+    const lastModified = first.headers.get("last-modified");
+    expect(etag).toMatch(/^W\/"/);
+    expect(lastModified).toBeTruthy();
+    await first.arrayBuffer();
+
+    const byEtag = await fetch(url, { headers: { "if-none-match": etag! } });
+    expect(byEtag.status).toBe(304);
+    expect(await byEtag.text()).toBe("");
+
+    const byDate = await fetch(url, {
+      headers: { "if-modified-since": lastModified! },
+    });
+    expect(byDate.status).toBe(304);
+
+    const stale = await fetch(url, { headers: { "if-none-match": '"nope"' } });
+    expect(stale.status).toBe(200);
+    expect(await stale.text()).toBe("PNGDATA");
+
+    const head = await fetch(url, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("7");
+    expect(await head.text()).toBe("");
+  });
+  it("answers 404 for a directory under the document's folder", async () => {
+    const dir = join(tmp, "doc");
+    await mkdir(join(dir, "sub"), { recursive: true });
+    await writeFile(join(dir, "a.md"), "# A");
+    const e = JSON.parse(
+      (
+        await postJson("/_/api/groups/default/files", {
+          path: join(dir, "a.md"),
+        })
+      ).body,
+    );
+    const r = await get(`/_/api/groups/default/files/${e.id}/raw/sub`);
+    expect(r.status).toBe(404);
   });
 });
 

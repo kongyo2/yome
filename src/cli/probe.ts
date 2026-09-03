@@ -30,17 +30,36 @@ export interface ProbeResult {
   groups: string[];
 }
 
+// PROBE_TIMEOUT_FAST is used when a missing server is the normal case (e.g.
+// first launch); PROBE_TIMEOUT_DEFAULT when the server is expected to be up.
 export const PROBE_TIMEOUT_FAST = 500;
 export const PROBE_TIMEOUT_DEFAULT = 2000;
+// How long waitForReady keeps polling after the spawned child died, giving
+// a race-winning server a chance to respond before the failure is reported.
+export const DEAD_CHILD_GRACE_MS = 1000;
+
+// ServerConflictError is thrown by waitForReady when a yome server other
+// than the spawned child owns the port (it lost a concurrent startup race).
+export class ServerConflictError extends Error {
+  constructor(readonly status: ProbeStatus) {
+    super(`another yome server is already running (pid ${status.pid})`);
+    this.name = "ServerConflictError";
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export function statusUrl(addr: string): string {
+  return `http://${addr}/_/api/status`;
+}
 
 export async function probeServer(
   addr: string,
   timeoutMs = PROBE_TIMEOUT_DEFAULT,
 ): Promise<ProbeResult> {
-  const status = await httpGetJson<ProbeStatus>(
-    `http://${addr}/_/api/status`,
-    timeoutMs,
-  );
+  const status = await httpGetJson<ProbeStatus>(statusUrl(addr), timeoutMs);
   if (!status || !status.version) {
     throw new Error(`server on ${addr} is not a yome instance`);
   }
@@ -149,41 +168,64 @@ export async function waitForServerDown(
     } catch {
       return;
     }
-    await new Promise((r) => setTimeout(r, interval));
+    await sleep(interval);
   }
   throw new Error(
     `server on ${addr} did not shut down within ${totalTimeoutMs}ms`,
   );
 }
 
+export interface WaitForReadyOptions {
+  // PID of the server process this call spawned. When a yome server answers
+  // with a different PID, the child lost a concurrent startup race and a
+  // ServerConflictError (carrying the winner's status) is thrown.
+  childPid?: number;
+  // Reports whether the spawned child has exited. Polling continues for
+  // DEAD_CHILD_GRACE_MS after that (the race winner may not be serving yet)
+  // and then fails fast instead of waiting out the full timeout.
+  childExited?: () => boolean;
+}
+
+// waitForReady polls addr until a yome server responds as ready, the spawned
+// child dies, or the timeout elapses.
 export async function waitForReady(
   addr: string,
   totalTimeoutMs = 10_000,
-  // Optional fail-fast hook: return an error message to abort the wait
-  // immediately (e.g. the spawned server process already exited).
-  shouldAbort?: () => string | null,
-): Promise<ProbeStatus | null> {
+  opts: WaitForReadyOptions = {},
+): Promise<ProbeStatus> {
   const deadline = Date.now() + totalTimeoutMs;
   let lastErr: Error | null = null;
+  let childDeadSince: number | null = null;
   while (Date.now() < deadline) {
-    const abortReason = shouldAbort?.();
-    if (abortReason) throw new Error(abortReason);
     try {
-      const status = await httpGetJson<ProbeStatus>(
-        `http://${addr}/_/api/status`,
-        500,
-      );
-      if (status) return status;
+      const status = await httpGetJson<ProbeStatus>(statusUrl(addr), 500);
+      if (status && status.version) {
+        if (opts.childPid && status.pid !== opts.childPid) {
+          throw new ServerConflictError(status);
+        }
+        return status;
+      }
     } catch (err) {
+      if (err instanceof ServerConflictError) throw err;
       lastErr = err as Error;
+    }
+    if (opts.childExited && childDeadSince === null && opts.childExited()) {
+      childDeadSince = Date.now();
+    }
+    if (
+      childDeadSince !== null &&
+      Date.now() - childDeadSince >= DEAD_CHILD_GRACE_MS
+    ) {
+      throw new Error(
+        "server process exited unexpectedly; the port may be in use by another server",
+      );
     }
     // Startup readiness is on the interactive path (`yome file.md` blocks on
     // it when spawning the server); a tight poll shaves real latency.
-    await new Promise((r) => setTimeout(r, 15));
+    await sleep(15);
   }
-  if (lastErr)
-    throw new Error(
-      `server did not become ready within ${totalTimeoutMs}ms: ${lastErr.message}`,
-    );
-  throw new Error(`server did not become ready within ${totalTimeoutMs}ms`);
+  const detail = lastErr ? `: ${lastErr.message}` : "";
+  throw new Error(
+    `server did not become ready within ${totalTimeoutMs}ms; the port may be in use by another (non-yome) server${detail}`,
+  );
 }

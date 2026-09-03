@@ -32,11 +32,16 @@ import {
   walkFiles,
 } from "../common/glob.js";
 import { expandGlob, matchPattern } from "../common/glob-match.js";
+import { isBinaryBuffer, isBinaryText } from "../common/binary.js";
 
 const DEFAULT_DEBOUNCE_MS = 200;
 const BACKUP_DEBOUNCE_MS = 1000;
+// Editors that save atomically (write a temp file, then rename it over the
+// original) surface as unlink+add; wait this long before trusting an unlink.
+const UNLINK_CONFIRM_MS = 100;
 
 type Subscriber = (e: SseEvent) => void;
+type BackupSaveFn = (data: RestoreData) => void | Promise<void>;
 
 interface StateOptions {
   fileChangeDebounceMs?: number;
@@ -61,11 +66,8 @@ function readFileHead(path: string): Buffer | null {
   }
 }
 
-function isBinaryBuffer(buf: Buffer): boolean {
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] === 0) return true;
-  }
-  return false;
+function cloneEntry(f: FileEntry): FileEntry {
+  return { ...f };
 }
 
 export class State {
@@ -79,9 +81,9 @@ export class State {
 
   private fileChangeDebounceMs: number;
   private fileChangeTimers = new Map<string, NodeJS.Timeout>();
+  private unlinkTimers = new Set<NodeJS.Timeout>();
 
-  private backupSaveFn: ((data: RestoreData) => void | Promise<void>) | null =
-    null;
+  private backupSaveFn: BackupSaveFn | null = null;
   private backupDirty = false;
   private backupTimer: NodeJS.Timeout | null = null;
   private backupClosed = false;
@@ -93,10 +95,7 @@ export class State {
   constructor(opts: StateOptions = {}) {
     this.fileChangeDebounceMs =
       opts.fileChangeDebounceMs ?? DEFAULT_DEBOUNCE_MS;
-    if (opts.disableWatcher) {
-      this.watcher = null;
-      return;
-    }
+    if (opts.disableWatcher) return;
     try {
       this.watcher = chokidarWatch([], {
         ignoreInitial: true,
@@ -115,19 +114,9 @@ export class State {
 
   private attachWatcher(): void {
     if (!this.watcher) return;
-    this.watcher.on("change", (p: string) =>
-      this.handleWatcherEvent("change", p),
-    );
-    this.watcher.on("add", (p: string) => this.handleWatcherEvent("add", p));
-    this.watcher.on("unlink", (p: string) =>
-      this.handleWatcherEvent("unlink", p),
-    );
-    this.watcher.on("addDir", (p: string) =>
-      this.handleWatcherEvent("addDir", p),
-    );
-    this.watcher.on("unlinkDir", (p: string) =>
-      this.handleWatcherEvent("unlinkDir", p),
-    );
+    // "all" delivers every event kind (including raw/ready, which are
+    // ignored) with the kind as first argument, in one registration.
+    this.watcher.on("all", (kind, p) => this.handleWatcherEvent(kind, p));
     this.watcher.on("error", (err: unknown) => {
       logger.warn("file watcher error", { error: String(err) });
     });
@@ -135,6 +124,8 @@ export class State {
 
   private handleWatcherEvent(kind: string, p: string): void {
     const eventPath = this.translateEventPath(p);
+    // State entries may be stored under either the original or the canonical
+    // (symlink-resolved) form, so look up refs for both when they differ.
     const refsTranslated = this.findRefsByPath(eventPath);
     const refsRaw = eventPath !== p ? this.findRefsByPath(p) : [];
 
@@ -145,22 +136,7 @@ export class State {
         if (refsRaw.length > 0) this.scheduleFileChanged(p);
       }
       if (kind === "unlink") {
-        // Confirm after a small delay (editors do atomic-replace)
-        setTimeout(() => {
-          try {
-            statSync(eventPath);
-            // file still exists, treat as change
-            if (refsTranslated.length > 0) this.scheduleFileChanged(eventPath);
-            if (refsRaw.length > 0) this.scheduleFileChanged(p);
-          } catch {
-            logger.info("file deleted, removing from list", {
-              path: eventPath,
-            });
-            for (const ref of refsTranslated)
-              this.removeFile(ref.id, ref.group);
-            for (const ref of refsRaw) this.removeFile(ref.id, ref.group);
-          }
-        }, 100);
+        this.confirmUnlink(eventPath, p, refsTranslated, refsRaw);
       }
     }
 
@@ -172,8 +148,49 @@ export class State {
       }
     }
     if (kind === "add" || kind === "addDir") {
-      this.handleCreateForGlobs(eventPath);
+      void this.handleCreateForGlobs(eventPath);
     }
+  }
+
+  // confirmUnlink re-checks the path after a short delay: an atomic save
+  // briefly removes the original inode, so a still-present file is a change,
+  // not a deletion. The watch is re-armed in that case because some backends
+  // drop it together with the old inode.
+  private confirmUnlink(
+    eventPath: string,
+    rawPath: string,
+    refsTranslated: FileRef[],
+    refsRaw: FileRef[],
+  ): void {
+    const timer = setTimeout(() => {
+      this.unlinkTimers.delete(timer);
+      let stillExists = false;
+      try {
+        statSync(eventPath);
+        stillExists = true;
+      } catch {
+        // gone for real
+      }
+      if (!stillExists) {
+        logger.info("file deleted, removing from list", { path: eventPath });
+        for (const ref of refsTranslated) this.removeFile(ref.id, ref.group);
+        for (const ref of refsRaw) this.removeFile(ref.id, ref.group);
+        return;
+      }
+      if (this.watcher) {
+        try {
+          this.watcher.add(eventPath);
+        } catch (err) {
+          logger.warn("failed to re-watch file", {
+            path: eventPath,
+            error: String(err),
+          });
+        }
+      }
+      if (refsTranslated.length > 0) this.scheduleFileChanged(eventPath);
+      if (refsRaw.length > 0) this.scheduleFileChanged(rawPath);
+    }, UNLINK_CONFIRM_MS);
+    this.unlinkTimers.add(timer);
   }
 
   // --- helpers ---
@@ -181,16 +198,17 @@ export class State {
   private translateEventPath(p: string): string {
     const orig = this.pathAliases.get(p);
     if (orig !== undefined) return orig;
+    // Files created inside a watched (symlinked) directory arrive with the
+    // canonical path of that directory as a prefix, but only the directory
+    // itself has an alias entry. Walk up parents to find the closest alias
+    // and rebuild the path with the original prefix.
     let dir = p;
     while (true) {
       const parent = dirname(dir);
       if (parent === dir) return p;
       dir = parent;
       const o = this.pathAliases.get(dir);
-      if (o !== undefined) {
-        const rel = relative(dir, p);
-        return join(o, rel);
-      }
+      if (o !== undefined) return join(o, relative(dir, p));
     }
   }
 
@@ -211,9 +229,7 @@ export class State {
     const refs: FileRef[] = [];
     for (const g of this.groups.values()) {
       for (const f of g.files) {
-        if (f.path === absPath) {
-          refs.push({ id: f.id, group: g.name });
-        }
+        if (f.path === absPath) refs.push({ id: f.id, group: g.name });
       }
     }
     return refs;
@@ -224,12 +240,17 @@ export class State {
     const refs: FileRef[] = [];
     for (const g of this.groups.values()) {
       for (const f of g.files) {
-        if (f.path.startsWith(prefix)) {
-          refs.push({ id: f.id, group: g.name });
-        }
+        if (f.path.startsWith(prefix)) refs.push({ id: f.id, group: g.name });
       }
     }
     return refs;
+  }
+
+  private isPathReferenced(absPath: string): boolean {
+    for (const g of this.groups.values()) {
+      if (g.files.some((f) => f.path === absPath)) return true;
+    }
+    return false;
   }
 
   private isWatchedDir(path: string): boolean {
@@ -237,8 +258,7 @@ export class State {
   }
 
   private handleDirMove(dirPath: string): void {
-    const refs = this.findRefsByPathPrefix(dirPath);
-    for (const ref of refs) {
+    for (const ref of this.findRefsByPathPrefix(dirPath)) {
       logger.info("removing stale file after directory move", {
         dir: dirPath,
         id: ref.id,
@@ -249,6 +269,39 @@ export class State {
 
   private groupHasPatterns(groupName: string): boolean {
     return this.patterns.some((p) => p.group === groupName);
+  }
+
+  private getOrCreateGroup(groupName: string): Group {
+    let g = this.groups.get(groupName);
+    if (!g) {
+      g = { name: groupName, files: [] };
+      this.groups.set(groupName, g);
+    }
+    return g;
+  }
+
+  // A group lives as long as it has files or watch patterns.
+  private pruneGroupIfEmpty(groupName: string): void {
+    const g = this.groups.get(groupName);
+    if (g && g.files.length === 0 && !this.groupHasPatterns(groupName)) {
+      this.groups.delete(groupName);
+    }
+  }
+
+  // Drops the watch (and alias) for a path that no entry references anymore.
+  private unwatchPathIfUnreferenced(absPath: string): void {
+    if (!this.watcher || absPath === "" || this.isPathReferenced(absPath)) {
+      return;
+    }
+    try {
+      this.watcher.unwatch(absPath);
+    } catch (err) {
+      logger.warn("failed to unwatch file", {
+        path: absPath,
+        error: String(err),
+      });
+    }
+    this.unregisterPathAlias(absPath);
   }
 
   private sendEvent(e: SseEvent): void {
@@ -262,6 +315,10 @@ export class State {
     if (e.name === EVENT_UPDATE) this.markDirty();
   }
 
+  private sendUpdate(): void {
+    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+  }
+
   private scheduleFileChanged(absPath: string): void {
     if (this.fileChangeDebounceMs <= 0) {
       this.notifyFileChangedByPath(absPath);
@@ -270,8 +327,7 @@ export class State {
     const existing = this.fileChangeTimers.get(absPath);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
-      const current = this.fileChangeTimers.get(absPath);
-      if (current === timer) {
+      if (this.fileChangeTimers.get(absPath) === timer) {
         this.fileChangeTimers.delete(absPath);
         this.notifyFileChangedByPath(absPath);
       }
@@ -286,17 +342,17 @@ export class State {
     let titleChanged = false;
     for (const g of this.groups.values()) {
       for (const f of g.files) {
-        if (f.path === absPath) {
-          ids.push(f.id);
-          if (titleOK && f.title !== newTitle) {
-            f.title = newTitle;
-            titleChanged = true;
-          }
+        if (f.path !== absPath) continue;
+        ids.push(f.id);
+        if (titleOK && (f.title ?? "") !== newTitle) {
+          if (newTitle) f.title = newTitle;
+          else delete f.title;
+          titleChanged = true;
         }
       }
     }
     if (ids.length === 0) return;
-    if (titleChanged) this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    if (titleChanged) this.sendUpdate();
     for (const id of ids) {
       this.sendEvent({
         name: EVENT_FILE_CHANGED,
@@ -308,11 +364,10 @@ export class State {
   // --- public API ---
 
   addFile(absPath: string, groupName: string): FileEntry {
-    const existingGroup = this.groups.get(groupName);
-    if (existingGroup) {
-      const f = existingGroup.files.find((x) => x.path === absPath);
-      if (f) return f;
-    }
+    const existing = this.groups
+      .get(groupName)
+      ?.files.find((x) => x.path === absPath);
+    if (existing) return existing;
 
     const head = readFileHead(absPath);
     if (head && head.length > 0 && isBinaryBuffer(head)) {
@@ -322,21 +377,13 @@ export class State {
     const title = head ? extractTitle(head.toString("utf8")) : "";
     const canonical = this.watcher ? resolvePathAlias(absPath) : "";
 
-    let g = this.groups.get(groupName);
-    if (!g) {
-      g = { name: groupName, files: [] };
-      this.groups.set(groupName, g);
-    }
-    const dup = g.files.find((x) => x.path === absPath);
-    if (dup) return dup;
-
     const entry: FileEntry = {
       name: basename(absPath),
       id: fileID(absPath),
       path: absPath,
     };
     if (title) entry.title = title;
-    g.files.push(entry);
+    this.getOrCreateGroup(groupName).files.push(entry);
 
     if (this.watcher) {
       try {
@@ -354,18 +401,17 @@ export class State {
       group: groupName,
       id: entry.id,
     });
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.sendUpdate();
     return entry;
   }
 
   addUploadedFile(name: string, content: string, groupName: string): FileEntry {
+    if (isBinaryText(content)) {
+      throw new Error(`${name}: ${ERR_BINARY_FILE}`);
+    }
     const id = uploadedFileID(content);
 
-    let g = this.groups.get(groupName);
-    if (!g) {
-      g = { name: groupName, files: [] };
-      this.groups.set(groupName, g);
-    }
+    const g = this.getOrCreateGroup(groupName);
     const dup = g.files.find((x) => x.id === id);
     if (dup) return dup;
 
@@ -386,14 +432,17 @@ export class State {
     g.files.push(entry);
 
     logger.info("uploaded file added", { name, group: groupName, id });
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.sendUpdate();
     return entry;
   }
 
+  // listGroups returns a deep copy: callers (JSON encoding, search batches
+  // that await between files) must never observe in-place mutations such as
+  // title updates from notifyFileChangedByPath.
   listGroups(): Group[] {
     return [...this.groups.values()].map((g) => ({
       name: g.name,
-      files: [...g.files],
+      files: g.files.map(cloneEntry),
     }));
   }
 
@@ -403,21 +452,18 @@ export class State {
   snapshotGroup(groupName: string): Group | null {
     const g = this.groups.get(groupName);
     if (!g) return null;
-    return { name: g.name, files: [...g.files] };
+    return { name: g.name, files: g.files.map(cloneEntry) };
   }
 
   findFile(id: string, groupName: string): FileEntry | null {
-    const g = this.groups.get(groupName);
-    if (!g) return null;
-    return g.files.find((x) => x.id === id) ?? null;
+    return this.groups.get(groupName)?.files.find((x) => x.id === id) ?? null;
   }
 
   reorderFiles(groupName: string, fileIDs: string[]): boolean {
     const g = this.groups.get(groupName);
     if (!g) return false;
     if (fileIDs.length !== g.files.length) return false;
-    const idToFile = new Map<string, FileEntry>();
-    for (const f of g.files) idToFile.set(f.id, f);
+    const idToFile = new Map(g.files.map((f) => [f.id, f]));
     const reordered: FileEntry[] = [];
     for (const id of fileIDs) {
       const f = idToFile.get(id);
@@ -425,7 +471,7 @@ export class State {
       reordered.push(f);
     }
     g.files = reordered;
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.sendUpdate();
     return true;
   }
 
@@ -434,17 +480,9 @@ export class State {
     sourceGroupName: string,
     targetGroup: string,
   ): { ok: true } | { error: string; status: number } {
-    let file: FileEntry | null = null;
-    let sourceGroup: Group | null = null;
-    const sg = this.groups.get(sourceGroupName);
-    if (sg) {
-      const f = sg.files.find((x) => x.id === id);
-      if (f) {
-        file = f;
-        sourceGroup = sg;
-      }
-    }
-    if (!file || !sourceGroup) {
+    const sourceGroup = this.groups.get(sourceGroupName);
+    const file = sourceGroup?.files.find((x) => x.id === id);
+    if (!sourceGroup || !file) {
       return { error: ERR_FILE_NOT_FOUND, status: 404 };
     }
     if (sourceGroupName === targetGroup) {
@@ -453,38 +491,23 @@ export class State {
         status: 409,
       };
     }
-    const tg = this.groups.get(targetGroup);
-    if (tg) {
-      for (const f of tg.files) {
-        if (file.uploaded) {
-          if (f.id === file.id) {
-            return {
-              error: `file "${file.name}" already exists in group "${targetGroup}"`,
-              status: 409,
-            };
-          }
-        } else if (f.path === file.path) {
-          return {
-            error: `file "${file.name}" already exists in group "${targetGroup}"`,
-            status: 409,
-          };
-        }
-      }
+    // Duplicates are detected by path for filesystem files and by ID for
+    // uploaded ones (whose ID is derived from the content).
+    const conflict = this.groups
+      .get(targetGroup)
+      ?.files.some((f) =>
+        file.uploaded ? f.id === file.id : f.path === file.path,
+      );
+    if (conflict) {
+      return {
+        error: `file "${file.name}" already exists in group "${targetGroup}"`,
+        status: 409,
+      };
     }
     sourceGroup.files = sourceGroup.files.filter((x) => x.id !== id);
-    if (
-      sourceGroup.files.length === 0 &&
-      !this.groupHasPatterns(sourceGroupName)
-    ) {
-      this.groups.delete(sourceGroupName);
-    }
-    let target = this.groups.get(targetGroup);
-    if (!target) {
-      target = { name: targetGroup, files: [] };
-      this.groups.set(targetGroup, target);
-    }
-    target.files.push(file);
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.pruneGroupIfEmpty(sourceGroupName);
+    this.getOrCreateGroup(targetGroup).files.push(file);
+    this.sendUpdate();
     return { ok: true };
   }
 
@@ -494,30 +517,17 @@ export class State {
     for (const [name, g] of [...this.groups]) {
       const before = g.files.length;
       g.files = g.files.filter((f) => {
-        if (f.path === absPath) {
-          logger.info("file removed", { path: f.path, id: f.id, group: name });
-          return false;
-        }
-        return true;
+        if (f.path !== absPath) return true;
+        logger.info("file removed", { path: f.path, id: f.id, group: name });
+        return false;
       });
       if (before !== g.files.length) removed = true;
-      if (g.files.length === 0 && !this.groupHasPatterns(name)) {
-        this.groups.delete(name);
-      }
+      this.pruneGroupIfEmpty(name);
     }
-    if (removed && this.watcher) {
-      try {
-        this.watcher.unwatch(absPath);
-      } catch (err) {
-        logger.warn("failed to unwatch file", {
-          path: absPath,
-          error: String(err),
-        });
-      }
-      this.unregisterPathAlias(absPath);
-    }
-    if (removed) this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
-    return removed;
+    if (!removed) return false;
+    this.unwatchPathIfUnreferenced(absPath);
+    this.sendUpdate();
+    return true;
   }
 
   removeFile(id: string, groupName: string): boolean {
@@ -527,32 +537,10 @@ export class State {
     if (idx === -1) return false;
     const removedPath = g.files[idx]?.path ?? "";
     g.files.splice(idx, 1);
-    if (g.files.length === 0 && !this.groupHasPatterns(groupName)) {
-      this.groups.delete(groupName);
-    }
+    this.pruneGroupIfEmpty(groupName);
     logger.info("file removed", { path: removedPath, id });
-
-    if (this.watcher && removedPath) {
-      let stillReferenced = false;
-      for (const og of this.groups.values()) {
-        if (og.files.some((f) => f.path === removedPath)) {
-          stillReferenced = true;
-          break;
-        }
-      }
-      if (!stillReferenced) {
-        try {
-          this.watcher.unwatch(removedPath);
-        } catch (err) {
-          logger.warn("failed to unwatch file", {
-            path: removedPath,
-            error: String(err),
-          });
-        }
-        this.unregisterPathAlias(removedPath);
-      }
-    }
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.unwatchPathIfUnreferenced(removedPath);
+    this.sendUpdate();
     return true;
   }
 
@@ -563,6 +551,8 @@ export class State {
     return () => this.subscribers.delete(fn);
   }
 
+  // closeAllSubscribers ends every SSE stream and stops the file watcher and
+  // all pending watcher timers, so nothing keeps the event loop alive.
   closeAllSubscribers(): void {
     for (const fn of this.subscribers) {
       try {
@@ -582,6 +572,8 @@ export class State {
     }
     for (const t of this.fileChangeTimers.values()) clearTimeout(t);
     this.fileChangeTimers.clear();
+    for (const t of this.unlinkTimers) clearTimeout(t);
+    this.unlinkTimers.clear();
   }
 
   // --- restart / shutdown channels ---
@@ -619,9 +611,7 @@ export class State {
     } catch (err) {
       throw new Error(
         `base directory "${base}" does not exist: ${String(err)}`,
-        {
-          cause: err,
-        },
+        { cause: err },
       );
     }
     if (!info.isDirectory()) {
@@ -643,10 +633,9 @@ export class State {
         recursive: isRecursivePattern(absPattern),
       };
       this.patterns.push(gp);
-      if (!this.groups.has(groupName)) {
-        this.groups.set(groupName, { name: groupName, files: [] });
-      }
-      await this.watchDirsForPattern(gp);
+      // Ensure the group exists even if no files match yet.
+      this.getOrCreateGroup(groupName);
+      await this.walkDirsForPattern(gp, (d) => this.addDirWatch(d));
     }
 
     const matches = await expandGlob(base, rel, { filesOnly: true });
@@ -655,8 +644,7 @@ export class State {
     const entries: FileEntry[] = [];
     for (const m of matches) {
       try {
-        const entry = this.addFile(m, groupName);
-        entries.push(entry);
+        entries.push(this.addFile(m, groupName));
       } catch (err) {
         logger.warn("skipping file", { path: m, error: String(err) });
       }
@@ -674,17 +662,13 @@ export class State {
     const idx = this.patterns.findIndex(
       (p) => p.pattern === absPattern && p.group === groupName,
     );
-    if (idx === -1) return false;
     const removed = this.patterns[idx];
-    if (!removed) return false;
+    if (idx === -1 || !removed) return false;
     this.patterns.splice(idx, 1);
     void this.walkDirsForPattern(removed, (d) => this.removeDirWatch(d));
     logger.info("pattern removed", { pattern: absPattern, group: groupName });
-    const g = this.groups.get(groupName);
-    if (g && g.files.length === 0 && !this.groupHasPatterns(groupName)) {
-      this.groups.delete(groupName);
-    }
-    this.sendEvent({ name: EVENT_UPDATE, data: "{}" });
+    this.pruneGroupIfEmpty(groupName);
+    this.sendUpdate();
     return true;
   }
 
@@ -700,6 +684,8 @@ export class State {
     try {
       await walkDirs(gp.baseDir, fn);
     } catch (err) {
+      // BaseDir may have been deleted; still process the base entry so an
+      // unwatch can decrement its refcount.
       fn(gp.baseDir);
       logger.warn("failed to walk directories for pattern", {
         pattern: gp.pattern,
@@ -709,50 +695,50 @@ export class State {
     }
   }
 
-  private async watchDirsForPattern(gp: GlobPattern): Promise<void> {
-    await this.walkDirsForPattern(gp, (d) => this.addDirWatch(d));
-  }
-
   private addDirWatch(dir: string): void {
     const cur = this.watchedDirs.get(dir) ?? 0;
     this.watchedDirs.set(dir, cur + 1);
-    if (cur === 0 && this.watcher) {
-      try {
-        this.watcher.add(dir);
-      } catch (err) {
-        this.watchedDirs.delete(dir);
-        logger.warn("failed to watch directory", {
-          path: dir,
-          error: String(err),
-        });
-        return;
-      }
-    } else {
+    if (cur > 0 || !this.watcher) return;
+    try {
+      this.watcher.add(dir);
+    } catch (err) {
+      this.watchedDirs.delete(dir);
+      logger.warn("failed to watch directory", {
+        path: dir,
+        error: String(err),
+      });
       return;
     }
-    const canonical = resolvePathAlias(dir);
-    if (this.watchedDirs.has(dir)) this.registerPathAlias(dir, canonical);
+    this.registerPathAlias(dir, resolvePathAlias(dir));
   }
 
   private removeDirWatch(dir: string): void {
     const count = this.watchedDirs.get(dir);
     if (count === undefined) return;
-    if (count <= 1) {
-      this.watchedDirs.delete(dir);
-      if (this.watcher) {
-        try {
-          this.watcher.unwatch(dir);
-        } catch (err) {
-          logger.warn("failed to remove directory watch", {
-            dir,
-            error: String(err),
-          });
-        }
-      }
-      this.unregisterPathAlias(dir);
-    } else {
+    if (count > 1) {
       this.watchedDirs.set(dir, count - 1);
+      return;
     }
+    this.watchedDirs.delete(dir);
+    if (this.watcher) {
+      try {
+        this.watcher.unwatch(dir);
+      } catch (err) {
+        logger.warn("failed to remove directory watch", {
+          dir,
+          error: String(err),
+        });
+      }
+    }
+    this.unregisterPathAlias(dir);
+  }
+
+  // coversDir reports whether a recursive pattern's base contains dir
+  // (path-aware: "/docs2" is not under "/docs").
+  private static coversDir(gp: GlobPattern, dir: string): boolean {
+    return (
+      gp.recursive && (dir === gp.baseDir || dir.startsWith(gp.baseDir + sep))
+    );
   }
 
   private async handleCreateForGlobs(path: string): Promise<void> {
@@ -764,38 +750,34 @@ export class State {
     } catch {
       return;
     }
-    if (info.isDirectory()) {
-      for (const gp of patterns) {
-        if (!gp.recursive) continue;
-        // Path-aware boundary: "/docs2" must not match baseDir "/docs".
-        if (path !== gp.baseDir && !path.startsWith(gp.baseDir + sep)) {
-          continue;
-        }
-        this.addDirWatch(path);
-        await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
-        break;
-      }
+    if (!info.isDirectory()) {
+      this.matchAndAddFile(path, patterns);
       return;
     }
-    this.matchAndAddFile(path, patterns);
+    // A new directory gets one refcount per recursive pattern covering it,
+    // mirroring watchDirsForPattern at registration time, so removing any
+    // one of those patterns later leaves the watch intact for the others.
+    const covering = patterns.filter((gp) => State.coversDir(gp, path));
+    if (covering.length === 0) return;
+    for (let i = 0; i < covering.length; i++) this.addDirWatch(path);
+    await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
   }
 
   private matchAndAddFile(path: string, patterns: GlobPattern[]): void {
     for (const gp of patterns) {
-      if (matchPattern(gp.pattern, path)) {
-        try {
-          this.addFile(path, gp.group);
-        } catch (err) {
-          logger.warn("skipping file", { path, error: String(err) });
-          return;
-        }
-        logger.info("auto-added file via glob", {
-          path,
-          pattern: gp.pattern,
-          group: gp.group,
-        });
+      if (!matchPattern(gp.pattern, path)) continue;
+      try {
+        this.addFile(path, gp.group);
+      } catch (err) {
+        logger.warn("skipping file", { path, error: String(err) });
         return;
       }
+      logger.info("auto-added file via glob", {
+        path,
+        pattern: gp.pattern,
+        group: gp.group,
+      });
+      return;
     }
   }
 
@@ -822,9 +804,7 @@ export class State {
     if (this.patterns.length > 0) {
       const patternsByGroup: Record<string, string[]> = {};
       for (const p of this.patterns) {
-        const list = patternsByGroup[p.group] ?? [];
-        list.push(p.pattern);
-        patternsByGroup[p.group] = list;
+        (patternsByGroup[p.group] ??= []).push(p.pattern);
       }
       data.patterns = patternsByGroup;
     }
@@ -832,7 +812,7 @@ export class State {
     return data;
   }
 
-  enableBackup(saveFn: (data: RestoreData) => void | Promise<void>): void {
+  enableBackup(saveFn: BackupSaveFn): void {
     this.backupSaveFn = saveFn;
   }
 
@@ -847,12 +827,25 @@ export class State {
       await this.backupInFlight;
       return;
     }
+    this.stopBackup();
+    await this.saveBackupNow();
+  }
+
+  // discardBackup cancels any pending save without flushing. A server that
+  // never got to listen (port in use) must not overwrite the backup that
+  // belongs to the instance actually serving the port.
+  async discardBackup(): Promise<void> {
+    this.stopBackup();
+    this.backupDirty = false;
+    await this.backupInFlight;
+  }
+
+  private stopBackup(): void {
     this.backupClosed = true;
     if (this.backupTimer) {
       clearTimeout(this.backupTimer);
       this.backupTimer = null;
     }
-    await this.saveBackupNow();
   }
 
   private markDirty(): void {

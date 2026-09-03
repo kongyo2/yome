@@ -1,4 +1,5 @@
 import { fstatSync, constants as fsConstants } from "node:fs";
+import { isBinaryBuffer } from "../common/binary.js";
 
 const MAX_STDIN_SIZE = 10 << 20;
 
@@ -31,7 +32,13 @@ export async function readStdin(
     }
     chunks.push(buf);
   }
-  const content = Buffer.concat(chunks).toString("utf8");
+  const raw = Buffer.concat(chunks);
+  // Same rule as for file arguments: a NUL byte means this is not text, and
+  // rendering it as Markdown would only produce garbage.
+  if (isBinaryBuffer(raw)) {
+    throw new Error("stdin content is binary; only text can be rendered");
+  }
+  const content = raw.toString("utf8");
   const { stdinName } = await import("./stdin-name.js");
   return { name: stdinName(content), content };
 }

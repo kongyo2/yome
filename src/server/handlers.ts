@@ -18,11 +18,20 @@ import {
   readSearchableContent,
   type SearchResult,
 } from "./search.js";
-import { sendFile } from "./static.js";
+import { sendLocalFile } from "./static.js";
 import { EVENT_STARTED, type FileEntry } from "./types.js";
 
+// JSON request bodies (12MB leaves headroom for the JSON envelope around a
+// 10MB upload) and the uploaded content itself.
 const MAX_UPLOAD_BYTES = 12 << 20;
 const MAX_CONTENT_BYTES = 10 << 20;
+
+const SEARCH_DEFAULT_LIMIT = 50;
+const SEARCH_MAX_LIMIT = 200;
+const SEARCH_DEFAULT_CONTEXT = 2;
+const SEARCH_MAX_CONTEXT = 5;
+// Files are read in small parallel batches; matching stays strictly ordered.
+const SEARCH_READ_BATCH = 8;
 
 function jsonResponse(
   res: ServerResponse,
@@ -38,6 +47,11 @@ function textResponse(res: ServerResponse, status: number, body: string): void {
   res.statusCode = status;
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.end(body + "\n");
+}
+
+function noContent(res: ServerResponse): void {
+  res.statusCode = 204;
+  res.end();
 }
 
 // Reject browser cross-site requests on state-mutating endpoints. CLI clients
@@ -66,7 +80,12 @@ function isSameOriginRequest(req: IncomingMessage): boolean {
   return true;
 }
 
-async function readJsonBody<T>(
+class RequestEntityTooLargeError extends Error {}
+
+// readJsonBody collects a JSON object body of at most maxBytes. Anything
+// that is not a JSON object (arrays, primitives, null) is rejected up front
+// so handlers can index fields without guarding against TypeErrors.
+async function readJsonBody<T extends object>(
   req: IncomingMessage,
   maxBytes: number,
 ): Promise<T> {
@@ -88,38 +107,66 @@ async function readJsonBody<T>(
         rejectP(new Error("empty body"));
         return;
       }
+      let parsed: unknown;
       try {
-        resolveP(JSON.parse(buf.toString("utf8")) as T);
+        parsed = JSON.parse(buf.toString("utf8"));
       } catch (err) {
         rejectP(err);
+        return;
       }
+      if (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed)
+      ) {
+        rejectP(new Error("invalid JSON body: expected an object"));
+        return;
+      }
+      resolveP(parsed as T);
     });
     req.on("error", (err) => rejectP(err));
   });
 }
 
-class RequestEntityTooLargeError extends Error {}
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v !== "";
+}
+
+// parseBoundedInt parses a query parameter as a non-negative integer with an
+// upper clamp. Returns null when the value is present but not an integer.
+function parseBoundedInt(
+  raw: string | null,
+  fallback: number,
+  min: number,
+  max: number,
+): number | null {
+  if (raw === null) return fallback;
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < min) return null;
+  return Math.min(max, n);
+}
 
 interface AddFileReq {
-  path: string;
+  path?: unknown;
 }
 interface UploadFileReq {
-  name: string;
-  content: string;
+  name?: unknown;
+  content?: unknown;
 }
 interface MoveFileReq {
-  group: string;
+  group?: unknown;
 }
 interface ReorderReq {
-  fileIds: string[];
+  fileIds?: unknown;
 }
 interface PatternReq {
-  pattern: string;
-  group: string;
+  pattern?: unknown;
+  group?: unknown;
 }
 interface OpenFileReq {
-  fileId: string;
-  path: string;
+  fileId?: unknown;
+  path?: unknown;
 }
 
 export interface BuildHandlersOpts {
@@ -148,21 +195,70 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     return true;
   }
 
+  // requireGroup validates a group name (route param or body field) and
+  // writes the 400 response itself; null means "already answered".
+  function requireGroup(raw: unknown, res: ServerResponse): string | null {
+    const { name, error } = resolveGroupName(
+      typeof raw === "string" ? raw : null,
+    );
+    if (error) {
+      textResponse(res, 400, error.message);
+      return null;
+    }
+    return name;
+  }
+
+  function requireFileId(
+    params: Record<string, string>,
+    res: ServerResponse,
+  ): string | null {
+    const id = params["id"] ?? "";
+    if (id === "") {
+      textResponse(res, 400, "missing file id");
+      return null;
+    }
+    return id;
+  }
+
+  // readBody wraps readJsonBody with the shared error mapping (413 for
+  // oversized payloads, 400 otherwise); null means "already answered".
+  async function readBody<T extends object>(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<T | null> {
+    try {
+      return await readJsonBody<T>(req, MAX_UPLOAD_BYTES);
+    } catch (err) {
+      if (err instanceof RequestEntityTooLargeError) {
+        textResponse(res, 413, "payload too large");
+      } else {
+        textResponse(res, 400, (err as Error).message);
+      }
+      return null;
+    }
+  }
+
+  function groupsWithPatterns() {
+    return state.listGroups().map((g) => ({
+      name: g.name,
+      files: g.files.map(stripContent),
+      patterns: state.patternsForGroup(g.name),
+    }));
+  }
+
   async function handleAddFile(
     req: IncomingMessage,
     res: ServerResponse,
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    let body: AddFileReq;
-    try {
-      body = await readJsonBody<AddFileReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const body = await readBody<AddFileReq>(req, res);
+    if (body === null) return;
+    if (!isNonEmptyString(body.path)) {
+      return textResponse(res, 400, "missing path");
     }
-    if (!body.path) return textResponse(res, 400, "missing path");
     const abs = isAbsolute(body.path) ? body.path : pathResolve(body.path);
     try {
       await stat(abs);
@@ -170,8 +266,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       return textResponse(res, 400, `file not found: ${abs}`);
     }
     try {
-      const entry = state.addFile(abs, group);
-      jsonResponse(res, 200, stripContent(entry));
+      jsonResponse(res, 200, stripContent(state.addFile(abs, group)));
     } catch (err) {
       textResponse(res, 400, (err as Error).message);
     }
@@ -183,8 +278,8 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
     let body: UploadFileReq;
     try {
       body = await readJsonBody<UploadFileReq>(req, MAX_UPLOAD_BYTES);
@@ -197,14 +292,18 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     if (typeof body.content !== "string") {
       return textResponse(res, 400, "missing or invalid 'content' field");
     }
-    if (typeof body.name !== "string" || body.name === "") {
+    if (!isNonEmptyString(body.name)) {
       return textResponse(res, 400, "missing file name");
     }
     if (Buffer.byteLength(body.content) > MAX_CONTENT_BYTES) {
       return textResponse(res, 413, "file too large (max 10MB)");
     }
-    const entry = state.addUploadedFile(body.name, body.content, group);
-    jsonResponse(res, 200, stripContent(entry));
+    try {
+      const entry = state.addUploadedFile(body.name, body.content, group);
+      jsonResponse(res, 200, stripContent(entry));
+    } catch (err) {
+      textResponse(res, 400, (err as Error).message);
+    }
   }
 
   function handleRemoveFile(
@@ -213,14 +312,14 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    const id = params["id"] ?? "";
-    if (id === "") return textResponse(res, 400, "missing file id");
-    if (!state.removeFile(id, group))
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const id = requireFileId(params, res);
+    if (id === null) return;
+    if (!state.removeFile(id, group)) {
       return textResponse(res, 404, "file not found");
-    res.statusCode = 204;
-    res.end();
+    }
+    noContent(res);
   }
 
   async function handleMoveFile(
@@ -229,24 +328,19 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: sourceGroup, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    const id = params["id"] ?? "";
-    if (id === "") return textResponse(res, 400, "missing file id");
-    let body: MoveFileReq;
-    try {
-      body = await readJsonBody<MoveFileReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
-    }
-    const { name: targetGroup, error: terr } = resolveGroupName(body.group);
-    if (terr) return textResponse(res, 400, terr.message);
+    const sourceGroup = requireGroup(params["group"], res);
+    if (sourceGroup === null) return;
+    const id = requireFileId(params, res);
+    if (id === null) return;
+    const body = await readBody<MoveFileReq>(req, res);
+    if (body === null) return;
+    const targetGroup = requireGroup(body.group, res);
+    if (targetGroup === null) return;
     const result = state.moveFile(id, sourceGroup, targetGroup);
     if ("error" in result) {
       return textResponse(res, result.status, result.error);
     }
-    res.statusCode = 204;
-    res.end();
+    noContent(res);
   }
 
   async function handleReorder(
@@ -255,31 +349,22 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    let body: ReorderReq;
-    try {
-      body = await readJsonBody<ReorderReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const body = await readBody<ReorderReq>(req, res);
+    if (body === null) return;
+    const ids = body.fileIds;
+    if (!Array.isArray(ids) || !ids.every((v) => typeof v === "string")) {
+      return textResponse(res, 400, "missing or invalid 'fileIds' field");
     }
-    if (!state.reorderFiles(group, body.fileIds)) {
+    if (!state.reorderFiles(group, ids as string[])) {
       return textResponse(res, 400, "invalid file IDs or group not found");
     }
-    res.statusCode = 204;
-    res.end();
+    noContent(res);
   }
 
   function handleGroups(_req: IncomingMessage, res: ServerResponse) {
-    jsonResponse(
-      res,
-      200,
-      state.listGroups().map((g) => ({
-        name: g.name,
-        files: g.files.map(stripContent),
-        patterns: state.patternsForGroup(g.name),
-      })),
-    );
+    jsonResponse(res, 200, groupsWithPatterns());
   }
 
   async function handleFileContent(
@@ -287,10 +372,10 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
     params: Record<string, string>,
   ) {
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    const id = params["id"] ?? "";
-    if (id === "") return textResponse(res, 400, "missing file id");
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const id = requireFileId(params, res);
+    if (id === null) return;
     const entry = state.findFile(id, group);
     if (!entry) return textResponse(res, 404, "file not found");
     if (entry.uploaded) {
@@ -304,6 +389,8 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       jsonResponse(res, 200, { content, baseDir: dirname(entry.path) });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        // File is gone from disk: drop it from state so the entry (and
+        // possibly the group) disappears from the UI.
         state.removeFilesByPath(entry.path);
         return textResponse(res, 404, "file not found");
       }
@@ -315,26 +402,22 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     const url = new URL(req.url ?? "/", "http://localhost/");
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q === "") return textResponse(res, 400, "missing search query");
-    const { name: group, error } = resolveGroupName(
-      url.searchParams.get("group"),
+    const group = requireGroup(url.searchParams.get("group"), res);
+    if (group === null) return;
+    const limit = parseBoundedInt(
+      url.searchParams.get("limit"),
+      SEARCH_DEFAULT_LIMIT,
+      1,
+      SEARCH_MAX_LIMIT,
     );
-    if (error) return textResponse(res, 400, error.message);
-    let limit = 50;
-    const limitRaw = url.searchParams.get("limit");
-    if (limitRaw != null) {
-      const n = Number(limitRaw);
-      if (!Number.isFinite(n) || n <= 0)
-        return textResponse(res, 400, "invalid limit");
-      limit = Math.min(200, Math.floor(n));
-    }
-    let contextLines = 2;
-    const ctxRaw = url.searchParams.get("context");
-    if (ctxRaw != null) {
-      const n = Number(ctxRaw);
-      if (!Number.isFinite(n) || n < 0)
-        return textResponse(res, 400, "invalid context");
-      contextLines = Math.min(5, Math.floor(n));
-    }
+    if (limit === null) return textResponse(res, 400, "invalid limit");
+    const contextLines = parseBoundedInt(
+      url.searchParams.get("context"),
+      SEARCH_DEFAULT_CONTEXT,
+      0,
+      SEARCH_MAX_CONTEXT,
+    );
+    if (contextLines === null) return textResponse(res, 400, "invalid context");
 
     const target = state.snapshotGroup(group);
     if (!target) return textResponse(res, 404, "group not found");
@@ -343,16 +426,12 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     const results: SearchResult[] = [];
     let total = 0;
     let remaining = limit;
-    // Read file contents in small parallel batches (matching stays strictly
-    // in group order, and no further batch is scheduled once the limit is
-    // reached), instead of one await per file.
-    const READ_BATCH = 8;
     for (
       let start = 0;
       start < target.files.length && remaining > 0;
-      start += READ_BATCH
+      start += SEARCH_READ_BATCH
     ) {
-      const batch = target.files.slice(start, start + READ_BATCH);
+      const batch = target.files.slice(start, start + SEARCH_READ_BATCH);
       const contents = await Promise.all(
         batch.map(async (entry) => {
           try {
@@ -367,8 +446,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
           }
         }),
       );
-      for (let i = 0; i < batch.length; i++) {
-        if (remaining === 0) break;
+      for (let i = 0; i < batch.length && remaining > 0; i++) {
         const entry = batch[i];
         const content = contents[i];
         if (!entry || content == null) continue;
@@ -402,15 +480,15 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     });
   }
 
-  async function handleFileRaw(
-    _req: IncomingMessage,
+  function handleFileRaw(
+    req: IncomingMessage,
     res: ServerResponse,
     params: Record<string, string>,
   ) {
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    const id = params["id"] ?? "";
-    if (id === "") return textResponse(res, 400, "missing file id");
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const id = requireFileId(params, res);
+    if (id === null) return;
     const entry = state.findFile(id, group);
     if (!entry) return textResponse(res, 404, "file not found");
     if (entry.uploaded) {
@@ -430,13 +508,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
       return textResponse(res, 403, "access denied");
     }
-    try {
-      const st = await stat(abs);
-      if (!st.isFile()) return textResponse(res, 404, "not a file");
-    } catch {
-      return textResponse(res, 404, "file not found");
-    }
-    sendFile(res, abs);
+    sendLocalFile(req, res, abs);
   }
 
   async function handleOpenFile(
@@ -445,22 +517,25 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     params: Record<string, string>,
   ) {
     if (rejectCrossSite(req, res)) return;
-    const { name: group, error } = resolveGroupName(params["group"]);
-    if (error) return textResponse(res, 400, error.message);
-    let body: OpenFileReq;
-    try {
-      body = await readJsonBody<OpenFileReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
+    const group = requireGroup(params["group"], res);
+    if (group === null) return;
+    const body = await readBody<OpenFileReq>(req, res);
+    if (body === null) return;
+    if (!isNonEmptyString(body.fileId)) {
+      return textResponse(res, 400, "missing or invalid 'fileId' field");
+    }
+    if (!isNonEmptyString(body.path)) {
+      return textResponse(res, 400, "missing or invalid 'path' field");
     }
     const entry = state.findFile(body.fileId, group);
     if (!entry) return textResponse(res, 404, "source file not found in group");
-    if (entry.uploaded)
+    if (entry.uploaded) {
       return textResponse(
         res,
         400,
         "relative links not available for uploaded files",
       );
+    }
     let decoded: string;
     try {
       decoded = decodeURIComponent(body.path);
@@ -477,8 +552,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       return textResponse(res, 400, (err as Error).message);
     }
     try {
-      const newEntry = state.addFile(abs, group);
-      jsonResponse(res, 200, stripContent(newEntry));
+      jsonResponse(res, 200, stripContent(state.addFile(abs, group)));
     } catch (err) {
       textResponse(res, 400, (err as Error).message);
     }
@@ -486,14 +560,13 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
 
   async function handleAddPattern(req: IncomingMessage, res: ServerResponse) {
     if (rejectCrossSite(req, res)) return;
-    let body: PatternReq;
-    try {
-      body = await readJsonBody<PatternReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
+    const body = await readBody<PatternReq>(req, res);
+    if (body === null) return;
+    if (!isNonEmptyString(body.pattern)) {
+      return textResponse(res, 400, "missing pattern");
     }
-    const { name: group, error } = resolveGroupName(body.group);
-    if (error) return textResponse(res, 400, error.message);
+    const group = requireGroup(body.group, res);
+    if (group === null) return;
     try {
       const entries = await state.addPattern(body.pattern, group);
       jsonResponse(res, 200, {
@@ -510,19 +583,17 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res: ServerResponse,
   ) {
     if (rejectCrossSite(req, res)) return;
-    let body: PatternReq;
-    try {
-      body = await readJsonBody<PatternReq>(req, MAX_UPLOAD_BYTES);
-    } catch (err) {
-      return textResponse(res, 400, (err as Error).message);
+    const body = await readBody<PatternReq>(req, res);
+    if (body === null) return;
+    if (!isNonEmptyString(body.pattern)) {
+      return textResponse(res, 400, "missing pattern");
     }
-    const { name: group, error } = resolveGroupName(body.group);
-    if (error) return textResponse(res, 400, error.message);
+    const group = requireGroup(body.group, res);
+    if (group === null) return;
     if (!state.removePattern(body.pattern, group)) {
       return textResponse(res, 404, "pattern not found");
     }
-    res.statusCode = 204;
-    res.end();
+    noContent(res);
   }
 
   async function handleRestart(req: IncomingMessage, res: ServerResponse) {
@@ -546,17 +617,11 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
   }
 
   function handleStatus(_req: IncomingMessage, res: ServerResponse) {
-    const groups = state.listGroups();
-    const statusGroups = groups.map((g) => ({
-      name: g.name,
-      files: g.files.map(stripContent),
-      patterns: state.patternsForGroup(g.name),
-    }));
     jsonResponse(res, 200, {
       version: Version,
       revision: Revision,
       pid,
-      groups: statusGroups,
+      groups: groupsWithPatterns(),
     });
   }
 
@@ -573,6 +638,11 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    if (req.method === "HEAD") {
+      // Headers only; never hold a bodiless request open as a stream.
+      res.end();
+      return;
+    }
     res.flushHeaders?.();
 
     res.write(`event: ${EVENT_STARTED}\ndata: ${JSON.stringify({ pid })}\n\n`);
@@ -598,7 +668,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       }
     };
     req.on("close", close);
-    req.on("aborted", close);
+    res.on("close", close);
   }
 
   return {

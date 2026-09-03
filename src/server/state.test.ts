@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { State } from "./state.js";
@@ -111,6 +111,87 @@ describe("State", () => {
     expect(entries).toHaveLength(2);
     expect(state.patternsForGroup("default")).toEqual([join(tmp, "*.md")]);
     expect(state.removePattern(join(tmp, "*.md"), "default")).toBe(true);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("returns snapshot copies that do not alias internal entries", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    const path = join(tmp, "a.md");
+    await writeFile(path, "# Hello\n");
+    const entry = state.addFile(path, "default");
+    const listed = state.listGroups()[0]!.files[0]!;
+    listed.title = "tampered";
+    const snap = state.snapshotGroup("default")!.files[0]!;
+    snap.title = "tampered too";
+    expect(state.findFile(entry.id, "default")?.title).toBe("Hello");
+    // The internal array is not shared either.
+    state.listGroups()[0]!.files.length = 0;
+    expect(state.listGroups()[0]?.files).toHaveLength(1);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("rejects binary uploaded content", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    expect(() =>
+      state.addUploadedFile("blob.md", "PNG\0\0\0", "default"),
+    ).toThrow(/binary/);
+    expect(state.listGroups()).toEqual([]);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("drops an empty title instead of storing an empty string on change", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    const path = join(tmp, "t.md");
+    await writeFile(path, "# Titled\n");
+    const entry = state.addFile(path, "default");
+    expect(entry.title).toBe("Titled");
+    await writeFile(path, "no heading anymore\n");
+    (
+      state as unknown as { notifyFileChangedByPath: (p: string) => void }
+    ).notifyFileChangedByPath(path);
+    const after = state.findFile(entry.id, "default")!;
+    expect("title" in after).toBe(false);
+    expect(JSON.stringify(after)).not.toContain('"title"');
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("keeps a directory watch while another recursive pattern still covers it", async () => {
+    const state = new State({ fileChangeDebounceMs: 0 });
+    await mkdir(join(tmp, "docs"));
+    const mdPattern = join(tmp, "docs", "**", "*.md");
+    const txtPattern = join(tmp, "docs", "**", "*.txt");
+    await state.addPattern(mdPattern, "default");
+    await state.addPattern(txtPattern, "default");
+    const priv = state as unknown as {
+      watchedDirs: Map<string, number>;
+      handleCreateForGlobs: (p: string) => Promise<void>;
+    };
+    expect(priv.watchedDirs.get(join(tmp, "docs"))).toBe(2);
+
+    // A directory created later must be ref-counted once per covering
+    // pattern, exactly like directories that existed at registration time.
+    const later = join(tmp, "docs", "later");
+    await mkdir(later);
+    await priv.handleCreateForGlobs(later);
+    expect(priv.watchedDirs.get(later)).toBe(2);
+
+    // A directory outside every pattern's base is left alone.
+    const outside = join(tmp, "docs2");
+    await mkdir(outside);
+    await priv.handleCreateForGlobs(outside);
+    expect(priv.watchedDirs.has(outside)).toBe(false);
+
+    state.removePattern(mdPattern, "default");
+    const deadline = Date.now() + 2000;
+    while (priv.watchedDirs.get(later) !== 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(priv.watchedDirs.get(later)).toBe(1);
+    expect(priv.watchedDirs.get(join(tmp, "docs"))).toBe(1);
     state.closeAllSubscribers();
     await state.closeBackup();
   });

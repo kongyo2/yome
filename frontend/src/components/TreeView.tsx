@@ -1,24 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FileEntry, Group } from "../hooks/useApi";
+import type { FileEntry } from "../hooks/useApi";
 import { buildTree, type TreeNode } from "../utils/buildTree";
-import { buildFileUrl } from "../utils/groups";
-import { isPlainLeftClick } from "../utils/linkClick";
-import { FileContextMenu } from "./FileContextMenu";
-import { FileIcon } from "./FileIcon";
+import { readStorageRecord, writeJsonStorage } from "../utils/storage";
+import type { FileMenuActions, FileMenuState } from "./FileContextMenu";
+import { FileItem } from "./FileItem";
 
 const COLLAPSED_STORAGE_KEY = "yome-sidebar-tree-collapsed";
 
 function getInitialCollapsed(group: string): Set<string> {
-  try {
-    const stored = localStorage.getItem(COLLAPSED_STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (parsed[group]) return new Set(parsed[group]);
-    }
-  } catch {
-    /* ignore */
-  }
-  return new Set();
+  const stored = readStorageRecord<unknown>(COLLAPSED_STORAGE_KEY)[group];
+  return new Set(
+    Array.isArray(stored)
+      ? stored.filter((p): p is string => typeof p === "string")
+      : [],
+  );
 }
 
 interface TreeViewProps {
@@ -26,16 +21,9 @@ interface TreeViewProps {
   activeGroup: string;
   activeFileId: string | null;
   showTitle: boolean;
-  menuOpenId: string | null;
-  otherGroups: Group[];
   onFileSelect: (id: string) => void;
-  onMenuToggle: (id: string) => void;
-  onOpenInNewTab: (id: string) => void;
-  onCopyPath: (path: string) => void;
-  onCopyLink: (id: string) => void;
-  onMoveToGroup: (id: string, group: string) => void;
-  onRemove: (id: string) => void;
-  menuRef: React.RefObject<HTMLDivElement | null>;
+  menu: FileMenuState;
+  actions: FileMenuActions;
 }
 
 export function TreeView({
@@ -43,16 +31,9 @@ export function TreeView({
   activeGroup,
   activeFileId,
   showTitle,
-  menuOpenId,
-  otherGroups,
   onFileSelect,
-  onMenuToggle,
-  onOpenInNewTab,
-  onCopyPath,
-  onCopyLink,
-  onMoveToGroup,
-  onRemove,
-  menuRef,
+  menu,
+  actions,
 }: TreeViewProps) {
   const tree = useMemo(() => buildTree(files), [files]);
   const [prevGroup, setPrevGroup] = useState(activeGroup);
@@ -66,14 +47,9 @@ export function TreeView({
   }
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(COLLAPSED_STORAGE_KEY);
-      const all = stored ? JSON.parse(stored) : {};
-      all[activeGroup] = [...collapsedPaths];
-      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(all));
-    } catch {
-      /* ignore */
-    }
+    const all = readStorageRecord<string[]>(COLLAPSED_STORAGE_KEY);
+    all[activeGroup] = [...collapsedPaths];
+    writeJsonStorage(COLLAPSED_STORAGE_KEY, all);
   }, [collapsedPaths, activeGroup]);
 
   const handleToggleCollapse = useCallback((path: string) => {
@@ -88,29 +64,21 @@ export function TreeView({
     });
   }, []);
 
+  const rowProps = {
+    activeGroup,
+    activeFileId,
+    showTitle,
+    onFileSelect,
+    menu,
+    actions,
+    collapsedPaths,
+    onToggleCollapse: handleToggleCollapse,
+  };
+
   return (
     <>
       {tree.children.map((node) => (
-        <TreeNodeItem
-          key={node.fullPath}
-          node={node}
-          depth={0}
-          activeGroup={activeGroup}
-          activeFileId={activeFileId}
-          showTitle={showTitle}
-          menuOpenId={menuOpenId}
-          otherGroups={otherGroups}
-          onFileSelect={onFileSelect}
-          onMenuToggle={onMenuToggle}
-          onOpenInNewTab={onOpenInNewTab}
-          onCopyPath={onCopyPath}
-          onCopyLink={onCopyLink}
-          onMoveToGroup={onMoveToGroup}
-          onRemove={onRemove}
-          menuRef={menuRef}
-          collapsedPaths={collapsedPaths}
-          onToggleCollapse={handleToggleCollapse}
-        />
+        <TreeNodeItem key={node.fullPath} node={node} depth={0} {...rowProps} />
       ))}
     </>
   );
@@ -122,70 +90,39 @@ interface TreeNodeItemProps {
   activeGroup: string;
   activeFileId: string | null;
   showTitle: boolean;
-  menuOpenId: string | null;
-  otherGroups: Group[];
   onFileSelect: (id: string) => void;
-  onMenuToggle: (id: string) => void;
-  onOpenInNewTab: (id: string) => void;
-  onCopyPath: (path: string) => void;
-  onCopyLink: (id: string) => void;
-  onMoveToGroup: (id: string, group: string) => void;
-  onRemove: (id: string) => void;
-  menuRef: React.RefObject<HTMLDivElement | null>;
+  menu: FileMenuState;
+  actions: FileMenuActions;
   collapsedPaths: Set<string>;
   onToggleCollapse: (path: string) => void;
 }
 
-function TreeNodeItem({
-  node,
-  depth,
-  activeGroup,
-  activeFileId,
-  showTitle,
-  menuOpenId,
-  otherGroups,
-  onFileSelect,
-  onMenuToggle,
-  onOpenInNewTab,
-  onCopyPath,
-  onCopyLink,
-  onMoveToGroup,
-  onRemove,
-  menuRef,
-  collapsedPaths,
-  onToggleCollapse,
-}: TreeNodeItemProps) {
+function TreeNodeItem({ node, depth, ...rest }: TreeNodeItemProps) {
   if (node.file != null) {
     return (
-      <FileNodeItem
+      <FileItem
         file={node.file}
-        name={node.name}
+        label={node.name}
         depth={depth}
-        activeGroup={activeGroup}
-        activeFileId={activeFileId}
-        showTitle={showTitle}
-        menuOpenId={menuOpenId}
-        otherGroups={otherGroups}
-        onFileSelect={onFileSelect}
-        onMenuToggle={onMenuToggle}
-        onOpenInNewTab={onOpenInNewTab}
-        onCopyPath={onCopyPath}
-        onCopyLink={onCopyLink}
-        onMoveToGroup={onMoveToGroup}
-        onRemove={onRemove}
-        menuRef={menuRef}
+        activeGroup={rest.activeGroup}
+        isActive={node.file.id === rest.activeFileId}
+        showTitle={rest.showTitle}
+        onFileSelect={rest.onFileSelect}
+        menu={rest.menu}
+        actions={rest.actions}
       />
     );
   }
 
-  const isCollapsed = collapsedPaths.has(node.fullPath);
+  const isCollapsed = rest.collapsedPaths.has(node.fullPath);
 
   return (
     <div>
       <button
         className="flex items-center gap-1.5 w-full px-3 py-1.5 border-none cursor-pointer text-left text-sm bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover transition-colors duration-150"
         style={{ paddingLeft: `${depth * 16 + 12}px` }}
-        onClick={() => onToggleCollapse(node.fullPath)}
+        onClick={() => rest.onToggleCollapse(node.fullPath)}
+        aria-expanded={!isCollapsed}
       >
         {/* Chevron */}
         <svg
@@ -217,101 +154,9 @@ function TreeNodeItem({
             key={child.fullPath}
             node={child}
             depth={depth + 1}
-            activeGroup={activeGroup}
-            activeFileId={activeFileId}
-            showTitle={showTitle}
-            menuOpenId={menuOpenId}
-            otherGroups={otherGroups}
-            onFileSelect={onFileSelect}
-            onMenuToggle={onMenuToggle}
-            onOpenInNewTab={onOpenInNewTab}
-            onCopyPath={onCopyPath}
-            onCopyLink={onCopyLink}
-            onMoveToGroup={onMoveToGroup}
-            onRemove={onRemove}
-            menuRef={menuRef}
-            collapsedPaths={collapsedPaths}
-            onToggleCollapse={onToggleCollapse}
+            {...rest}
           />
         ))}
-    </div>
-  );
-}
-
-interface FileNodeItemProps {
-  file: FileEntry;
-  name: string;
-  depth: number;
-  activeGroup: string;
-  activeFileId: string | null;
-  showTitle: boolean;
-  menuOpenId: string | null;
-  otherGroups: Group[];
-  onFileSelect: (id: string) => void;
-  onMenuToggle: (id: string) => void;
-  onOpenInNewTab: (id: string) => void;
-  onCopyPath: (path: string) => void;
-  onCopyLink: (id: string) => void;
-  onMoveToGroup: (id: string, group: string) => void;
-  onRemove: (id: string) => void;
-  menuRef: React.RefObject<HTMLDivElement | null>;
-}
-
-function FileNodeItem({
-  file,
-  name,
-  depth,
-  activeGroup,
-  activeFileId,
-  showTitle,
-  menuOpenId,
-  otherGroups,
-  onFileSelect,
-  onMenuToggle,
-  onOpenInNewTab,
-  onCopyPath,
-  onCopyLink,
-  onMoveToGroup,
-  onRemove,
-  menuRef,
-}: FileNodeItemProps) {
-  const isActive = file.id === activeFileId;
-
-  return (
-    <div className="relative group/file">
-      <a
-        href={buildFileUrl(activeGroup, file.id)}
-        className={`flex items-center gap-2 w-full px-3 py-2 border-none cursor-pointer text-left text-sm no-underline transition-colors duration-150 ${
-          isActive
-            ? "bg-gh-bg-active text-gh-text font-semibold"
-            : "bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover"
-        }`}
-        style={{ paddingLeft: `${depth * 16 + 12}px` }}
-        onClick={(e) => {
-          if (!isPlainLeftClick(e)) return;
-          e.preventDefault();
-          onFileSelect(file.id);
-        }}
-        title={file.uploaded ? file.name : file.path}
-        aria-current={isActive ? "page" : undefined}
-      >
-        <FileIcon uploaded={file.uploaded} />
-        <span className="overflow-hidden text-ellipsis whitespace-nowrap pr-6">
-          {(showTitle && file.title) || name}
-        </span>
-      </a>
-      <FileContextMenu
-        file={file}
-        isOpen={menuOpenId === file.id}
-        otherGroups={otherGroups}
-        onToggle={onMenuToggle}
-        onOpenInNewTab={onOpenInNewTab}
-        onCopyPath={onCopyPath}
-        onCopyLink={onCopyLink}
-        onMoveToGroup={onMoveToGroup}
-        onRemove={onRemove}
-        menuRef={menuRef}
-      />
     </div>
   );
 }

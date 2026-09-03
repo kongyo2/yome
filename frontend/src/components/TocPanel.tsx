@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useResizablePanel } from "../hooks/useResizablePanel";
 import { isPlainLeftClick } from "../utils/linkClick";
 
 export interface TocHeading {
@@ -18,15 +18,6 @@ const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 240;
 const STORAGE_KEY = "yome-toc-width";
 
-function getInitialWidth(): number {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored) {
-    const n = parseInt(stored, 10);
-    if (n >= MIN_WIDTH && n <= MAX_WIDTH) return n;
-  }
-  return DEFAULT_WIDTH;
-}
-
 const INDENT: Record<number, string> = {
   1: "pl-3",
   2: "pl-6",
@@ -41,42 +32,13 @@ export function TocPanel({
   activeHeadingId,
   onHeadingClick,
 }: TocPanelProps) {
-  const [width, setWidth] = useState(getInitialWidth);
-  const dragging = useRef(false);
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }, []);
-
-  useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      const clamped = Math.min(
-        MAX_WIDTH,
-        Math.max(MIN_WIDTH, window.innerWidth - e.clientX),
-      );
-      setWidth(clamped);
-    };
-    const onMouseUp = () => {
-      if (!dragging.current) return;
-      dragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, String(width));
-  }, [width]);
+  const { width, onResizeStart } = useResizablePanel({
+    storageKey: STORAGE_KEY,
+    min: MIN_WIDTH,
+    max: MAX_WIDTH,
+    defaultWidth: DEFAULT_WIDTH,
+    edge: "right",
+  });
 
   return (
     <aside
@@ -86,7 +48,7 @@ export function TocPanel({
       {/* Resize handle */}
       <div
         className="absolute top-0 left-0 w-1 h-full cursor-col-resize hover:bg-gh-border active:bg-gh-border transition-colors"
-        onMouseDown={onMouseDown}
+        onMouseDown={onResizeStart}
       />
       <nav className="flex flex-col pb-1">
         {headings.length === 0 ? (
