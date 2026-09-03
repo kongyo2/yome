@@ -95,10 +95,11 @@ async function readJsonBody<T extends object>(
     const onData = (c: Buffer) => {
       size += c.length;
       if (size > maxBytes) {
-        // Stop buffering but keep draining: destroying the socket here
-        // would race the 413 the handler is about to write and the client
-        // might never see it. The handler answers with Connection: close,
-        // so Node ends the socket once the response has been flushed.
+        // Stop buffering but keep the request flowing so the rest of the
+        // body is drained and discarded: the handler answers 413 right away
+        // (payloadTooLarge), and the socket is closed only once the body
+        // has been received in full, so the client is never reset
+        // mid-upload and always gets to read the 413.
         req.removeListener("data", onData);
         req.removeListener("end", onEnd);
         req.resume();
@@ -136,12 +137,38 @@ async function readJsonBody<T extends object>(
   });
 }
 
-// payloadTooLarge answers 413 for an oversized body. The remainder of that
-// body is being discarded, so the connection must not be reused for
-// another request.
-function payloadTooLarge(res: ServerResponse, message: string): void {
+// payloadTooLarge answers 413 for an oversized body. The response goes out
+// at once so the client learns the outcome as early as possible, but it is
+// only ended -- which makes Node close the socket, as Connection: close
+// demands -- after the request body has been received in full or the client
+// has gone away. Closing while the client is still uploading would make the
+// kernel answer the unread bytes with a TCP reset, and the client could then
+// lose the 413 behind an EPIPE / ECONNRESET. readJsonBody keeps the request
+// flowing, so the remainder of the body is drained and discarded meanwhile;
+// the server's requestTimeout bounds how long that can take.
+function payloadTooLarge(
+  req: IncomingMessage,
+  res: ServerResponse,
+  message: string,
+): void {
+  const body = message + "\n";
+  res.statusCode = 413;
   res.setHeader("Connection", "close");
-  textResponse(res, 413, message);
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Length", Buffer.byteLength(body));
+  res.write(body);
+  const finish = () => {
+    if (!res.writableEnded) res.end();
+  };
+  // The body may already have been consumed by the time the handler gets
+  // here (req.complete is set before "end" is emitted), and an aborted
+  // request never emits "end".
+  if (req.complete || req.destroyed) {
+    finish();
+  } else {
+    req.once("end", finish);
+    req.once("close", finish);
+  }
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -246,7 +273,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       return await readJsonBody<T>(req, MAX_UPLOAD_BYTES);
     } catch (err) {
       if (err instanceof RequestEntityTooLargeError) {
-        payloadTooLarge(res, "payload too large");
+        payloadTooLarge(req, res, "payload too large");
       } else {
         textResponse(res, 400, (err as Error).message);
       }
@@ -301,7 +328,7 @@ export function buildHandlers(state: State, opts: BuildHandlersOpts) {
       body = await readJsonBody<UploadFileReq>(req, MAX_UPLOAD_BYTES);
     } catch (err) {
       if (err instanceof RequestEntityTooLargeError) {
-        return payloadTooLarge(res, "file too large (max 10MB)");
+        return payloadTooLarge(req, res, "file too large (max 10MB)");
       }
       return textResponse(res, 400, (err as Error).message);
     }
