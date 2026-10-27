@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MarkdownViewer } from "./MarkdownViewer";
 import { fetchFileContent, openRelativeFile } from "../hooks/useApi";
+import katexCss from "katex/dist/katex.min.css?raw";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -130,6 +131,32 @@ describe("MarkdownViewer file label", () => {
 
     const label = await screen.findByTitle("/home/me/code/yome/docs/README.md");
     expect(label).toHaveClass("text-right");
+  });
+});
+
+describe("MarkdownViewer math", () => {
+  // rehype-katex renders with whichever katex it resolves, while the viewer
+  // imports the stylesheet of the direct katex dependency. KaTeX 0.18 renamed
+  // its internal layout classes, so a renderer still on 0.16 lost the
+  // position:absolute of the overlay \not builds for \ne, and the slash
+  // rendered beside the relation instead of over it.
+  it("renders \\ne with the overlay class the bundled KaTeX stylesheet positions", async () => {
+    vi.mocked(fetchFileContent).mockResolvedValue({
+      content: "$a \\ne b$",
+      baseDir: "/repo",
+    });
+    const { container } = renderViewer();
+    await waitFor(() =>
+      expect(container.querySelector(".katex .rlap")).not.toBeNull(),
+    );
+    const childClasses = Array.from(
+      container.querySelectorAll(".katex .rlap > *"),
+    ).map((el) => el.classList[0]);
+    expect(
+      childClasses.some((c) =>
+        katexCss.includes(`.katex .rlap>.${c}{position:absolute}`),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -263,16 +290,45 @@ describe("MarkdownViewer anchor scrolling", () => {
     Element.prototype.scrollIntoView = originalScrollIntoView;
   });
 
-  it("scrolls to the fragment target and consumes it once rendered", async () => {
+  it("jumps to the fragment target and consumes it once rendered", async () => {
+    vi.mocked(fetchFileContent).mockResolvedValue({
+      content: "# Hello\n\n## Auth\n\nbody",
+      baseDir: "/repo",
+    });
+    // rehype-slug gives the "## Auth" heading id="auth". Only it sits 300px
+    // down (following the scroll position, as real layout does), so landing
+    // anywhere else leaves a different scroll position.
+    const layout = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      if (this.id === "auth") {
+        const top = 300 - scrollContainer.scrollTop;
+        return rect(top, top + 40);
+      }
+      return layout.call(this);
+    };
+    const scrolled = vi.fn();
+    renderViewer({ scrollToAnchorId: "auth", onScrolledToAnchor: scrolled });
+
+    await waitFor(() => expect(scrolled).toHaveBeenCalled());
+    // A jump, not a smooth scroll animating down from the top of a document
+    // the reader never saw there.
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(scrollContainer.scrollTop).toBe(300);
+  });
+
+  it("falls back to scrollIntoView without a scroll container", async () => {
     vi.mocked(fetchFileContent).mockResolvedValue({
       content: "# Hello\n\n## Auth\n\nbody",
       baseDir: "/repo",
     });
     const scrolled = vi.fn();
-    renderViewer({ scrollToAnchorId: "auth", onScrolledToAnchor: scrolled });
+    renderViewer({
+      scrollContainer: null,
+      scrollToAnchorId: "auth",
+      onScrolledToAnchor: scrolled,
+    });
 
     await waitFor(() => expect(scrolled).toHaveBeenCalled());
-    // rehype-slug gives the "## Auth" heading id="auth"; it must be the target.
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     const target = scrollIntoView.mock.contexts[0] as HTMLElement;
     expect(target.id).toBe("auth");

@@ -2,10 +2,15 @@ import { describe, it, expect } from "vitest";
 import type { FileEntry } from "../hooks/useApi";
 import { buildTree } from "./buildTree";
 
-// Mirrors the server, which sends name = basename(path) for the host OS.
+// Mirrors what the server sends: a native path plus the segments it split off.
 function makeFile(id: string, path: string): FileEntry {
-  const name = path.split(/[/\\]/).pop()!;
-  return { id, name, path };
+  const segments = path.split("/").filter(Boolean);
+  return { id, name: segments[segments.length - 1], path, segments };
+}
+
+function makeWindowsFile(id: string, path: string): FileEntry {
+  const segments = path.split("\\").filter(Boolean);
+  return { id, name: segments[segments.length - 1], path, segments };
 }
 
 function makeUploadedFile(id: string, name: string): FileEntry {
@@ -161,13 +166,25 @@ describe("buildTree", () => {
 describe("Windows-style paths", () => {
   it("builds a tree from backslash-separated paths", () => {
     const files = [
-      makeFile("1", "C:\\docs\\a.md"),
-      makeFile("2", "C:\\docs\\sub\\b.md"),
+      makeWindowsFile("1", "C:\\docs\\a.md"),
+      makeWindowsFile("2", "C:\\docs\\sub\\b.md"),
     ];
     const root = buildTree(files);
     expect(root.children.length).toBe(2);
     expect(root.children[0].name).toBe("sub");
     expect(root.children[0].children[0].name).toBe("b.md");
     expect(root.children[1].name).toBe("a.md");
+  });
+});
+
+describe("POSIX file names containing a backslash", () => {
+  it("keeps the name as one node instead of splitting it", () => {
+    const files = [
+      makeFile("1", "/docs/foo\\bar.md"),
+      makeFile("2", "/docs/sub/b.md"),
+    ];
+    const root = buildTree(files);
+    expect(root.children.map((c) => c.name)).toEqual(["sub", "foo\\bar.md"]);
+    expect(root.children[1].file?.id).toBe("1");
   });
 });

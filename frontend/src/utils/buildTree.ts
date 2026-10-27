@@ -31,9 +31,11 @@ export function buildTree(files: FileEntry[]): TreeNode {
     return root;
   }
 
-  // Split each file path into segments once. The server sends OS-native
-  // absolute paths, so accept both separators (Windows sends backslashes).
-  const splitPaths = fsFiles.map((f) => f.path.split(/[/\\]/));
+  // The server splits the path for us, since only it knows which separator
+  // its OS uses: splitting on both here would tear a POSIX file name that
+  // contains a backslash in two. `path` itself stays native for the tooltip
+  // and the copy-path menu.
+  const splitPaths = fsFiles.map((f) => f.segments ?? []);
   const dirSegmentsList = splitPaths.map((parts) => parts.slice(0, -1));
 
   // Find common prefix among directory parts

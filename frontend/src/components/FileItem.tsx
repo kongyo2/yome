@@ -39,7 +39,7 @@ export function FileItem({
     <div className="relative group/file">
       <a
         href={buildFileUrl(activeGroup, file.id)}
-        className={`flex items-center gap-2 w-full px-3 py-2 border-none cursor-pointer text-left text-sm no-underline transition-colors duration-150 ${
+        className={`flex items-center gap-2 w-full px-3 py-2 border-none cursor-pointer text-left text-sm no-underline transition-colors duration-150 focus-visible:-outline-offset-2 ${
           isActive
             ? "bg-gh-bg-active text-gh-text font-semibold"
             : "bg-transparent text-gh-text-secondary hover:bg-gh-bg-hover"

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rename, rm, writeFile, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+  unlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { State } from "./state.js";
@@ -92,5 +100,30 @@ describe("file watcher integration", () => {
     await unlink(path);
     await waitFor(() => state.listGroups().length === 0, 4000);
     expect(state.listGroups()).toEqual([]);
+  });
+  it("picks up a symlinked directory created under a recursive pattern", async () => {
+    const target = join(tmp, "outbound", "task");
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "existing.md"), "# Existing");
+    await state.addPattern(join(tmp, "**", "*.md"), "default");
+    await new Promise((r) => setTimeout(r, 150));
+    await mkdir(join(tmp, "pending"));
+    const link = join(tmp, "pending", "task");
+    try {
+      await symlink(target, link);
+    } catch {
+      // Symlinks unavailable (e.g. Windows without privileges).
+      return;
+    }
+    const hasPath = (path: string) =>
+      state
+        .listGroups()
+        .find((g) => g.name === "default")
+        ?.files.some((f) => f.path === path) ?? false;
+    await waitFor(() => hasPath(join(link, "existing.md")), 4000);
+    // A file created later in the target shows up under the link as well.
+    await writeFile(join(target, "created.md"), "# Created");
+    await waitFor(() => hasPath(join(link, "created.md")), 4000);
+    expect(hasPath(join(target, "created.md"))).toBe(true);
   });
 });

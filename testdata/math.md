@@ -10,6 +10,8 @@ Einstein's famous equation: $E = mc^2$.
 
 Euler's identity: $e^{i\pi} + 1 = 0$.
 
+Negated relations: $a \ne b$, $a \neq b$, $x \notin A$.
+
 ## Block Math
 
 The Gaussian integral:

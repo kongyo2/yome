@@ -10,7 +10,7 @@ English | [日本語](README.md)
 
 It faithfully follows the behavior of the original Go implementation while being rewritten in Node.js + React so you can invoke it casually from npm with `npx`.
 
-> Upstream sync status: caught up to the equivalent of mo **v1.6.7** (2026-08-03).
+> Upstream sync status: caught up to the equivalent of mo **v1.7.0** (2026-10-21).
 
 ## Features
 
@@ -18,7 +18,8 @@ It faithfully follows the behavior of the original Go implementation while being
 - **Live reload**: saving a file re-renders it in the browser instantly
 - **Single-server model**: shares the default port `6275`, so a later `yome` invocation adds files to the existing session (when several `yome` processes race for the port at once, the loser hands its files to the winner instead of reporting a false start)
 - **Groups (tabs)**: split content into named groups with `--target`, each with its own URL and sidebar
-- **Watch mode**: watches directories and glob patterns, automatically picking up newly created files (an empty group left with only a pattern shows a hint for the unwatch command)
+- **Watch mode**: watches directories and glob patterns, automatically picking up newly created files (recursive patterns — `-R` / `**` — also reach into symlinked directories; an empty group left with only a pattern shows a hint for the unwatch command)
+- **Table of contents and deep links**: clicking a ToC entry puts the heading in the URL hash, so the location can be shared as a link to that section. Back/forward moves between headings too, and a reload restores where you were reading rather than jumping back to the hash
 - **stdin input**: Markdown piped from stdin is rendered on the spot
 - **Session restore**: even after the server stops, the files you had open are restored automatically on the next launch
 - **Rich rendering**:

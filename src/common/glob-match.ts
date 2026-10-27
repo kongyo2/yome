@@ -3,9 +3,9 @@
 // paths that actually match patterns (the server, and CLI invocations whose
 // arguments contain globs or directories).
 import { readdir, stat } from "node:fs/promises";
-import { join, isAbsolute } from "node:path";
+import { join, isAbsolute, relative } from "node:path";
 import picomatch from "picomatch";
-import { toSlash } from "./glob.js";
+import { toSlash, walkSymlinkTree } from "./glob.js";
 
 // Compiled matchers are cached because matchPattern runs for every watcher
 // event against every registered pattern.
@@ -118,4 +118,23 @@ export async function expandGlob(
   } catch {
     return [];
   }
+}
+
+// expandRecursiveGlob expands a `**` watch pattern relative to base. Unlike
+// expandGlob it descends into symlinked directories (cutting cycles), and a
+// file reachable through several aliases matches once per alias path: file
+// IDs derive from the path, so collapsing aliases onto one form would make
+// the surviving ID depend on readdir order. Throws when base itself cannot
+// be walked.
+export async function expandRecursiveGlob(
+  base: string,
+  rel: string,
+): Promise<string[]> {
+  const matcher = picomatch(rel, { dot: false, nocase: false });
+  const matches: string[] = [];
+  const { error } = await walkSymlinkTree(base, null, (p) => {
+    if (matcher(toSlash(relative(base, p)))) matches.push(p);
+  });
+  if (error) throw error;
+  return matches;
 }

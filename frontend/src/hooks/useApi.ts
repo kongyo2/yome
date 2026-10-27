@@ -1,7 +1,10 @@
 export interface FileEntry {
   name: string;
   id: string;
+  /** OS-native absolute path, for display and copy-to-clipboard. */
   path: string;
+  /** `path` split by the server, so the client never parses separators itself. */
+  segments?: string[];
   title?: string;
   uploaded?: boolean;
 }

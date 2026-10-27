@@ -1,4 +1,10 @@
-import { useLayoutEffect, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type { FileEntry, Group } from "../hooks/useApi";
 import { shouldDropUp } from "../utils/menuPlacement";
 import { RemoveIcon } from "./RemoveIcon";
@@ -37,6 +43,21 @@ interface FileContextMenuProps {
 export function FileContextMenu({ file, menu, actions }: FileContextMenuProps) {
   const isOpen = menu.openId === file.id;
   const [dropUp, setDropUp] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const { onToggle } = actions;
+
+  // Focus goes back to the toggle because the focused menu item unmounts with the
+  // menu, which would drop a keyboard user to <body>.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      onToggle(file.id);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onToggle, file.id]);
 
   // Measured only on open, while the menu is still at its default `top-full`
   // position: re-running this after `dropUp` flips would make it oscillate.
@@ -62,7 +83,8 @@ export function FileContextMenu({ file, menu, actions }: FileContextMenuProps) {
   return (
     <>
       <button
-        className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover/file:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-gh-accent flex items-center justify-center bg-transparent border-none cursor-pointer text-gh-text-secondary hover:text-gh-text rounded p-0.5 transition-opacity duration-150"
+        ref={buttonRef}
+        className={`absolute right-1 top-1/2 -translate-y-1/2 ${isOpen ? "opacity-100" : "opacity-0"} group-hover/file:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-gh-accent flex items-center justify-center bg-transparent border-none cursor-pointer text-gh-text-secondary hover:text-gh-text rounded p-0.5 transition-opacity duration-150`}
         aria-label={`More actions for ${file.name}`}
         aria-haspopup="menu"
         aria-expanded={isOpen}

@@ -41,6 +41,7 @@ import {
 import { stripMdxSyntax } from "../utils/mdx";
 import { isMarkdownFile, detectLanguage } from "../utils/filetype";
 import { formatFileLabel } from "../utils/fileLabel";
+import { anchorScroll } from "../utils/scrollAnchor";
 import {
   collectSearchHitMarkers,
   SEARCH_HIT_COLUMN_OFFSET,
@@ -469,7 +470,7 @@ export function MarkdownViewer({
   }, [showLoading, renderedContent, scrollToHeading, onScrolledToHeading]);
 
   // Cross-file links may carry a fragment (api.md#auth). Once the target file
-  // has rendered, scroll to the matching element id (rehype-slug ids for
+  // has rendered, land on the matching element id (rehype-slug ids for
   // headings, footnote ids, etc.).
   useLayoutEffect(() => {
     if (showLoading || !scrollToAnchorId || !articleRef.current) {
@@ -484,11 +485,24 @@ export function MarkdownViewer({
         /* malformed encoding — give up */
       }
     }
-    if (target) scrollTo(target);
+    if (target) {
+      // Jump rather than scroll smoothly: the reader never saw this document
+      // at its top, so animating down from there only delays the landing.
+      // anchorScroll also keeps the target in place while content above it
+      // (Mermaid, images) is still rendering.
+      if (scrollContainer) anchorScroll(scrollContainer, target);
+      else scrollTo(target);
+    }
     // Always consume the pending anchor so it cannot scroll a file rendered
     // later by coincidence of a matching id.
     onScrolledToAnchor?.();
-  }, [showLoading, renderedContent, scrollToAnchorId, onScrolledToAnchor]);
+  }, [
+    showLoading,
+    renderedContent,
+    scrollToAnchorId,
+    onScrolledToAnchor,
+    scrollContainer,
+  ]);
 
   useLayoutEffect(() => {
     if (
@@ -597,7 +611,7 @@ export function MarkdownViewer({
           ref={articleRef}
           className={`markdown-body relative overflow-visible${isWide ? " markdown-body--wide" : ""}${fontSize !== "medium" ? ` markdown-body--${fontSize}` : ""}`}
         >
-          <div className="pointer-events-none absolute inset-0 z-10 overflow-visible">
+          <div className="pointer-events-none absolute inset-0 z-10 overflow-visible [overflow-anchor:none]">
             {searchHitMarkers.map((marker, index) => (
               <div
                 key={`${marker.top}:${marker.height}:${index}`}
