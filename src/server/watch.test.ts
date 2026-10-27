@@ -9,7 +9,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { State } from "./state.js";
 
 let tmp: string;
@@ -125,5 +125,31 @@ describe("file watcher integration", () => {
     await writeFile(join(target, "created.md"), "# Created");
     await waitFor(() => hasPath(join(link, "created.md")), 4000);
     expect(hasPath(join(target, "created.md"))).toBe(true);
+  });
+  it("does not report a file once per lap of a symlink loop", async () => {
+    const tree = join(tmp, "tree");
+    await mkdir(join(tree, "real"), { recursive: true });
+    await writeFile(join(tree, "real", "a.md"), "# A");
+    try {
+      // tree/real/loop -> tree: following it never ends.
+      await symlink(tree, join(tree, "real", "loop"));
+    } catch {
+      // Symlinks unavailable (e.g. Windows without privileges).
+      return;
+    }
+    await state.addPattern(join(tree, "**", "*.md"), "default");
+    await new Promise((r) => setTimeout(r, 150));
+    const paths = () =>
+      state
+        .listGroups()
+        .find((g) => g.name === "default")
+        ?.files.map((f) => f.path) ?? [];
+    const created = join(tree, "real", "later.md");
+    await writeFile(created, "# Later");
+    await waitFor(() => paths().includes(created), 4000);
+    // Give events for alias paths through the loop time to surface.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(paths().filter((p) => p.endsWith("later.md"))).toEqual([created]);
+    expect(paths().some((p) => p.includes(`${sep}loop${sep}`))).toBe(false);
   });
 });

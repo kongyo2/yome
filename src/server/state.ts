@@ -24,6 +24,7 @@ import {
 } from "./title.js";
 import {
   isRecursivePattern,
+  isSymlinkCycle,
   pathSegments,
   splitPattern,
   sortPathsNatural,
@@ -104,6 +105,13 @@ export class State {
         ignoreInitial: true,
         persistent: true,
         followSymlinks: true,
+        // Directory reads hand over lstat stats, so a link back to a
+        // directory above it is skipped before chokidar descends into it —
+        // otherwise every file in the loop would be reported once per lap,
+        // under paths the initial expansion (which cuts the cycle) never
+        // produces.
+        ignored: (p, stats) =>
+          stats?.isSymbolicLink() === true && isSymlinkCycle(p),
         awaitWriteFinish: false,
         usePolling: false,
         atomic: true,

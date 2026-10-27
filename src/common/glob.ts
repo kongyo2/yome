@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 const GLOB_CHARS = /[*?[\]]/;
 export function hasGlobChars(s: string): boolean {
@@ -69,8 +70,8 @@ interface TreeItem {
 }
 
 // The canonical (symlink-resolved) paths of the directories above an entry,
-// innermost first. Only a symlink can lead back to one of them, so only
-// symlinks are checked against it.
+// innermost first, up to the filesystem root. Only a symlink can lead back to
+// one of them, so only symlinks are checked against it.
 interface Ancestors {
   canonical: string;
   parent: Ancestors | null;
@@ -81,6 +82,47 @@ function isAncestor(chain: Ancestors | null, canonical: string): boolean {
     if (c.canonical === canonical) return true;
   }
   return false;
+}
+
+// The canonical paths of the directories above root, which a walk does not
+// pass through but a symlink can still lead back to (`up -> ..`). Following
+// such a link would re-enter the walked tree from above.
+async function canonicalAncestors(root: string): Promise<Ancestors | null> {
+  const dirs: string[] = [];
+  for (let dir = dirname(root); ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (dirname(dir) === dir) break;
+  }
+  const canonical = await Promise.all(
+    dirs.map((d) => realpath(d).catch(() => null)),
+  );
+  let chain: Ancestors | null = null;
+  for (let i = canonical.length - 1; i >= 0; i--) {
+    const c = canonical[i];
+    if (c != null) chain = { canonical: c, parent: chain };
+  }
+  return chain;
+}
+
+// isSymlinkCycle reports whether the symlink at p resolves to a directory
+// above it — the rule walkSymlinkTree cuts cycles by — so the file watcher can
+// skip it too instead of following the loop until the OS gives up (ELOOP).
+// Synchronous because chokidar's ignore matcher is.
+export function isSymlinkCycle(p: string): boolean {
+  let target;
+  try {
+    target = realpathSync.native(p);
+  } catch {
+    return false;
+  }
+  for (let dir = dirname(p); ; dir = dirname(dir)) {
+    try {
+      if (realpathSync.native(dir) === target) return true;
+    } catch {
+      // an ancestor that does not resolve cannot be the target either
+    }
+    if (dirname(dir) === dir) return false;
+  }
 }
 
 function asError(err: unknown): Error {
@@ -168,9 +210,10 @@ async function followSymlink(
   } catch {
     return { kind: "unresolved", path: abs };
   }
-  // A link back to a directory on the current path would recurse forever.
-  // Any other alias of a directory is walked under its own path, so every
-  // alias of a file is reported in its own right.
+  // A link back to a directory above it (on the walked path or above the
+  // root) would recurse forever. Any other alias of a directory is walked
+  // under its own path, so every alias of a file is reported in its own
+  // right.
   if (isAncestor(chain, canonical)) return undefined;
   return collectSubtree(abs, { canonical, parent: chain });
 }
@@ -209,7 +252,8 @@ export async function walkSymlinkTree(
   visitDir?.(root);
   let items;
   try {
-    items = await collectTree(root, { canonical, parent: null });
+    const above = await canonicalAncestors(root);
+    items = await collectTree(root, { canonical, parent: above });
   } catch (err) {
     // root already went to visitDir, so it must not also be reported as
     // unresolved: a teardown would otherwise release it twice.

@@ -11,6 +11,7 @@ import { join, sep } from "node:path";
 import {
   hasGlobChars,
   isRecursivePattern,
+  isSymlinkCycle,
   pathSegments,
   splitPattern,
   toSlash,
@@ -243,6 +244,43 @@ describe("walkSymlinkTree", () => {
     expect(files).toEqual([join(tmp, "nested", "note.md")]);
   });
 
+  it("does not follow a symlink to a directory above the walk root", async () => {
+    const base = join(tmp, "base");
+    mkdirSync(base);
+    writeFileSync(join(base, "a.md"), "");
+    mkdirSync(join(tmp, "other"));
+    writeFileSync(join(tmp, "other", "o.md"), "");
+    // Following `up` would walk the base's siblings and then the base again.
+    if (!trySymlink(tmp, join(base, "up"))) return;
+
+    const { dirs, files, error } = await walk(base);
+
+    expect(error).toBeNull();
+    expect(dirs).toEqual([base]);
+    expect(files).toEqual([join(base, "a.md")]);
+  });
+
+  it("cuts a cycle that runs through more than one link", async () => {
+    mkdirSync(join(tmp, "a"));
+    mkdirSync(join(tmp, "b"));
+    writeFileSync(join(tmp, "a", "fa.md"), "");
+    writeFileSync(join(tmp, "b", "fb.md"), "");
+    if (
+      !trySymlink(join(tmp, "b"), join(tmp, "a", "x")) ||
+      !trySymlink(join(tmp, "a"), join(tmp, "b", "y"))
+    ) {
+      return;
+    }
+
+    const { dirs, files, error } = await walk(join(tmp, "a"));
+
+    expect(error).toBeNull();
+    expect(dirs).toEqual([join(tmp, "a"), join(tmp, "a", "x")]);
+    expect(files.sort()).toEqual(
+      [join(tmp, "a", "fa.md"), join(tmp, "a", "x", "fb.md")].sort(),
+    );
+  });
+
   it("visits a directory before its contents, in sequential walk order", async () => {
     mkdirSync(join(tmp, "a", "b"), { recursive: true });
     writeFileSync(join(tmp, "a", "b", "c.md"), "");
@@ -328,5 +366,61 @@ describe("expandRecursiveGlob", () => {
     await expect(
       expandRecursiveGlob(join(tmp, "missing"), "**/*.md"),
     ).rejects.toThrow();
+  });
+});
+
+describe("isSymlinkCycle", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "yome-cycle-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function link(target: string, path: string): boolean {
+    try {
+      symlinkSync(target, path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("flags a link to a directory above it", () => {
+    mkdirSync(join(tmp, "nested"));
+    if (!link(tmp, join(tmp, "nested", "back"))) return;
+    expect(isSymlinkCycle(join(tmp, "nested", "back"))).toBe(true);
+  });
+
+  it("flags the link that closes a cycle through another link", () => {
+    mkdirSync(join(tmp, "a"));
+    mkdirSync(join(tmp, "b"));
+    if (
+      !link(join(tmp, "b"), join(tmp, "a", "x")) ||
+      !link(join(tmp, "a"), join(tmp, "b", "y"))
+    ) {
+      return;
+    }
+    expect(isSymlinkCycle(join(tmp, "a", "x"))).toBe(false);
+    expect(isSymlinkCycle(join(tmp, "a", "x", "y"))).toBe(true);
+  });
+
+  it("leaves links to siblings, to files and dangling links alone", () => {
+    mkdirSync(join(tmp, "target"));
+    writeFileSync(join(tmp, "file.md"), "");
+    mkdirSync(join(tmp, "pending"));
+    if (
+      !link(join(tmp, "target"), join(tmp, "pending", "task")) ||
+      !link(join(tmp, "file.md"), join(tmp, "pending", "file.md")) ||
+      !link(join(tmp, "gone"), join(tmp, "pending", "broken"))
+    ) {
+      return;
+    }
+    expect(isSymlinkCycle(join(tmp, "pending", "task"))).toBe(false);
+    expect(isSymlinkCycle(join(tmp, "pending", "file.md"))).toBe(false);
+    expect(isSymlinkCycle(join(tmp, "pending", "broken"))).toBe(false);
   });
 });
