@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { statSync, openSync, readSync, closeSync } from "node:fs";
-import { basename, dirname, join, sep, relative } from "node:path";
+import { basename, sep } from "node:path";
 import { watch as chokidarWatch, type FSWatcher } from "chokidar";
 import { logger } from "../logfile/index.js";
 import {
@@ -24,14 +24,18 @@ import {
 } from "./title.js";
 import {
   isRecursivePattern,
-  resolvePathAlias,
+  isSymlinkCycle,
+  pathSegments,
   splitPattern,
   sortPathsNatural,
   toSlash,
-  walkDirs,
-  walkFiles,
+  walkSymlinkTree,
 } from "../common/glob.js";
-import { expandGlob, matchPattern } from "../common/glob-match.js";
+import {
+  expandGlob,
+  expandRecursiveGlob,
+  matchPattern,
+} from "../common/glob-match.js";
 import { isBinaryBuffer, isBinaryText } from "../common/binary.js";
 
 const DEFAULT_DEBOUNCE_MS = 200;
@@ -67,7 +71,9 @@ function readFileHead(path: string): Buffer | null {
 }
 
 function cloneEntry(f: FileEntry): FileEntry {
-  return { ...f };
+  const c = { ...f };
+  if (f.segments) c.segments = [...f.segments];
+  return c;
 }
 
 export class State {
@@ -76,8 +82,6 @@ export class State {
   private watcher: FSWatcher | null = null;
   private patterns: GlobPattern[] = [];
   private watchedDirs = new Map<string, number>();
-  private pathAliases = new Map<string, string>();
-  private aliasReverse = new Map<string, string>();
 
   private fileChangeDebounceMs: number;
   private fileChangeTimers = new Map<string, NodeJS.Timeout>();
@@ -101,6 +105,13 @@ export class State {
         ignoreInitial: true,
         persistent: true,
         followSymlinks: true,
+        // Directory reads hand over lstat stats, so a link back to a
+        // directory above it is skipped before chokidar descends into it —
+        // otherwise every file in the loop would be reported once per lap,
+        // under paths the initial expansion (which cuts the cycle) never
+        // produces.
+        ignored: (p, stats) =>
+          stats?.isSymbolicLink() === true && isSymlinkCycle(p),
         awaitWriteFinish: false,
         usePolling: false,
         atomic: true,
@@ -122,30 +133,24 @@ export class State {
     });
   }
 
-  private handleWatcherEvent(kind: string, p: string): void {
-    const eventPath = this.translateEventPath(p);
-    // State entries may be stored under either the original or the canonical
-    // (symlink-resolved) form, so look up refs for both when they differ.
-    const refsTranslated = this.findRefsByPath(eventPath);
-    const refsRaw = eventPath !== p ? this.findRefsByPath(p) : [];
-
-    if (refsTranslated.length + refsRaw.length > 0) {
+  // Unlike upstream's watcher, chokidar reports every event under the path it
+  // was asked to watch, never a symlink-resolved form: with followSymlinks it
+  // watches each alias of a linked directory itself (one event per alias), so
+  // events need no translation back to the stored path.
+  private handleWatcherEvent(kind: string, eventPath: string): void {
+    const refs = this.findRefsByPath(eventPath);
+    if (refs.length > 0) {
       if (kind === "change" || kind === "add") {
         logger.info("file changed", { path: eventPath });
-        if (refsTranslated.length > 0) this.scheduleFileChanged(eventPath);
-        if (refsRaw.length > 0) this.scheduleFileChanged(p);
+        this.scheduleFileChanged(eventPath);
       }
       if (kind === "unlink") {
-        this.confirmUnlink(eventPath, p, refsTranslated, refsRaw);
+        this.confirmUnlink(eventPath, refs);
       }
     }
 
-    if (kind === "unlinkDir") {
-      if (this.isWatchedDir(eventPath)) {
-        this.handleDirMove(eventPath);
-      } else if (eventPath !== p && this.isWatchedDir(p)) {
-        this.handleDirMove(p);
-      }
+    if (kind === "unlinkDir" && this.isWatchedDir(eventPath)) {
+      this.handleDirMove(eventPath);
     }
     if (kind === "add" || kind === "addDir") {
       void this.handleCreateForGlobs(eventPath);
@@ -156,12 +161,7 @@ export class State {
   // briefly removes the original inode, so a still-present file is a change,
   // not a deletion. The watch is re-armed in that case because some backends
   // drop it together with the old inode.
-  private confirmUnlink(
-    eventPath: string,
-    rawPath: string,
-    refsTranslated: FileRef[],
-    refsRaw: FileRef[],
-  ): void {
+  private confirmUnlink(eventPath: string, refs: FileRef[]): void {
     const timer = setTimeout(() => {
       this.unlinkTimers.delete(timer);
       let stillExists = false;
@@ -173,8 +173,7 @@ export class State {
       }
       if (!stillExists) {
         logger.info("file deleted, removing from list", { path: eventPath });
-        for (const ref of refsTranslated) this.removeFile(ref.id, ref.group);
-        for (const ref of refsRaw) this.removeFile(ref.id, ref.group);
+        for (const ref of refs) this.removeFile(ref.id, ref.group);
         return;
       }
       if (this.watcher) {
@@ -187,43 +186,12 @@ export class State {
           });
         }
       }
-      if (refsTranslated.length > 0) this.scheduleFileChanged(eventPath);
-      if (refsRaw.length > 0) this.scheduleFileChanged(rawPath);
+      this.scheduleFileChanged(eventPath);
     }, UNLINK_CONFIRM_MS);
     this.unlinkTimers.add(timer);
   }
 
   // --- helpers ---
-
-  private translateEventPath(p: string): string {
-    const orig = this.pathAliases.get(p);
-    if (orig !== undefined) return orig;
-    // Files created inside a watched (symlinked) directory arrive with the
-    // canonical path of that directory as a prefix, but only the directory
-    // itself has an alias entry. Walk up parents to find the closest alias
-    // and rebuild the path with the original prefix.
-    let dir = p;
-    while (true) {
-      const parent = dirname(dir);
-      if (parent === dir) return p;
-      dir = parent;
-      const o = this.pathAliases.get(dir);
-      if (o !== undefined) return join(o, relative(dir, p));
-    }
-  }
-
-  private registerPathAlias(orig: string, canonical: string): void {
-    if (canonical === "") return;
-    this.pathAliases.set(canonical, orig);
-    this.aliasReverse.set(orig, canonical);
-  }
-
-  private unregisterPathAlias(orig: string): void {
-    const canonical = this.aliasReverse.get(orig);
-    if (canonical === undefined) return;
-    this.pathAliases.delete(canonical);
-    this.aliasReverse.delete(orig);
-  }
 
   private findRefsByPath(absPath: string): FileRef[] {
     const refs: FileRef[] = [];
@@ -288,7 +256,7 @@ export class State {
     }
   }
 
-  // Drops the watch (and alias) for a path that no entry references anymore.
+  // Drops the watch for a path that no entry references anymore.
   private unwatchPathIfUnreferenced(absPath: string): void {
     if (!this.watcher || absPath === "" || this.isPathReferenced(absPath)) {
       return;
@@ -301,7 +269,6 @@ export class State {
         error: String(err),
       });
     }
-    this.unregisterPathAlias(absPath);
   }
 
   private sendEvent(e: SseEvent): void {
@@ -375,12 +342,12 @@ export class State {
     }
 
     const title = head ? extractTitle(head.toString("utf8")) : "";
-    const canonical = this.watcher ? resolvePathAlias(absPath) : "";
 
     const entry: FileEntry = {
       name: basename(absPath),
       id: fileID(absPath),
       path: absPath,
+      segments: pathSegments(absPath),
     };
     if (title) entry.title = title;
     this.getOrCreateGroup(groupName).files.push(entry);
@@ -388,7 +355,6 @@ export class State {
     if (this.watcher) {
       try {
         this.watcher.add(absPath);
-        this.registerPathAlias(absPath, canonical);
       } catch (err) {
         logger.warn("failed to watch file", {
           path: absPath,
@@ -621,24 +587,34 @@ export class State {
     // Re-registering an existing pattern is idempotent: skip the watcher
     // bookkeeping (dir watches are ref-counted) but still expand the glob so
     // the caller gets the current matches instead of a misleading empty list.
-    const isNew = !this.patterns.some(
+    const existing = this.patterns.find(
       (p) => p.pattern === absPattern && p.group === groupName,
     );
-    if (isNew) {
-      const gp: GlobPattern = {
-        pattern: absPattern,
-        patternSlash: slash,
-        baseDir: base,
-        group: groupName,
-        recursive: isRecursivePattern(absPattern),
-      };
+    const gp: GlobPattern = existing ?? {
+      pattern: absPattern,
+      patternSlash: slash,
+      baseDir: base,
+      group: groupName,
+      recursive: isRecursivePattern(absPattern),
+    };
+    let createdGroup = false;
+    if (!existing) {
       this.patterns.push(gp);
       // Ensure the group exists even if no files match yet.
+      createdGroup = !this.groups.has(groupName);
       this.getOrCreateGroup(groupName);
       await this.walkDirsForPattern(gp, (d) => this.addDirWatch(d));
     }
 
-    const matches = await expandGlob(base, rel, { filesOnly: true });
+    let matches;
+    try {
+      matches = gp.recursive
+        ? await expandRecursiveGlob(base, rel)
+        : await expandGlob(base, rel, { filesOnly: true });
+    } catch (err) {
+      if (!existing) await this.rollbackPattern(gp, createdGroup);
+      throw new Error(`glob expansion failed: ${String(err)}`, { cause: err });
+    }
     sortPathsNatural(matches);
 
     const entries: FileEntry[] = [];
@@ -672,6 +648,22 @@ export class State {
     return true;
   }
 
+  // rollbackPattern undoes what addPattern registered before an initial
+  // expansion that failed. Left in place, the pattern would be reported by
+  // --status and persisted to the backup although the caller was told it
+  // could not be added.
+  private async rollbackPattern(
+    gp: GlobPattern,
+    createdGroup: boolean,
+  ): Promise<void> {
+    const idx = this.patterns.indexOf(gp);
+    // A removePattern that ran meanwhile has already released its watches.
+    if (idx === -1) return;
+    this.patterns.splice(idx, 1);
+    await this.walkDirsForPattern(gp, (d) => this.removeDirWatch(d));
+    if (createdGroup) this.pruneGroupIfEmpty(gp.group);
+  }
+
   private async walkDirsForPattern(
     gp: GlobPattern,
     fn: (path: string) => void,
@@ -681,16 +673,20 @@ export class State {
       fn(gp.baseDir);
       return;
     }
-    try {
-      await walkDirs(gp.baseDir, fn);
-    } catch (err) {
-      // BaseDir may have been deleted; still process the base entry so an
-      // unwatch can decrement its refcount.
-      fn(gp.baseDir);
+    const { unresolved, error } = await walkSymlinkTree(gp.baseDir, fn, null);
+    // Entries that could not be classified never reached fn. Hand over the
+    // ones tracked as watched directories, so an unwatch still releases a
+    // directory that stopped resolving after its watch was set up (a
+    // deleted base, or a symlinked directory whose target is gone). Anything
+    // else, such as a dangling file symlink, has no watch to release.
+    for (const p of unresolved) {
+      if (this.isWatchedDir(p)) fn(p);
+    }
+    if (error) {
       logger.warn("failed to walk directories for pattern", {
         pattern: gp.pattern,
         base: gp.baseDir,
-        error: String(err),
+        error: String(error),
       });
     }
   }
@@ -707,9 +703,7 @@ export class State {
         path: dir,
         error: String(err),
       });
-      return;
     }
-    this.registerPathAlias(dir, resolvePathAlias(dir));
   }
 
   private removeDirWatch(dir: string): void {
@@ -730,7 +724,6 @@ export class State {
         });
       }
     }
-    this.unregisterPathAlias(dir);
   }
 
   // coversDir reports whether a recursive pattern's base contains dir
@@ -755,12 +748,25 @@ export class State {
       return;
     }
     // A new directory gets one refcount per recursive pattern covering it,
-    // mirroring watchDirsForPattern at registration time, so removing any
-    // one of those patterns later leaves the watch intact for the others.
+    // mirroring walkDirsForPattern at registration time, so removing any one
+    // of those patterns later leaves the watch intact for the others. Only
+    // the directory itself is counted: chokidar reports an addDir for every
+    // directory below it (through symlinks too) as it reads the new tree.
     const covering = patterns.filter((gp) => State.coversDir(gp, path));
     if (covering.length === 0) return;
     for (let i = 0; i < covering.length; i++) this.addDirWatch(path);
-    await walkFiles(path, (p) => this.matchAndAddFile(p, patterns));
+    // The files are matched here as well rather than left to chokidar's add
+    // events alone, the way registration-time expansion found them —
+    // including those inside directories linked into the new tree.
+    const { error } = await walkSymlinkTree(path, null, (p) =>
+      this.matchAndAddFile(p, patterns),
+    );
+    if (error) {
+      logger.warn("failed to scan created directory", {
+        path,
+        error: String(error),
+      });
+    }
   }
 
   // matchAndAddFile adds a newly created file to every group with a

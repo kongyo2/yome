@@ -17,6 +17,9 @@ export default defineConfig({
     include: ["src/**/*.test.{ts,tsx}"],
     environment: "jsdom",
     setupFiles: ["src/test-setup.ts"],
+    // Vitest stubs CSS imports (?raw included) unless matched here; the math
+    // test reads the KaTeX stylesheet to check it targets the rendered classes.
+    css: { include: [/katex\.min\.css/] },
     coverage: {
       provider: "v8",
       include: ["src/utils/**", "src/hooks/**", "src/components/**"],

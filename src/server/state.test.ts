@@ -1,10 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { State } from "./state.js";
 
 let tmp: string;
+
+// Symlinks may be unavailable (e.g. Windows without privileges); tests that
+// need them have nothing to assert in that case.
+async function trySymlink(target: string, path: string): Promise<boolean> {
+  try {
+    await symlink(target, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+interface StateInternals {
+  watchedDirs: Map<string, number>;
+  handleCreateForGlobs: (p: string) => Promise<void>;
+}
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), "yome-state-"));
@@ -233,6 +256,124 @@ describe("State", () => {
     expect(state.patternsForGroup("default")).toEqual([join(tmp, "*.md")]);
     const group = state.listGroups().find((g) => g.name === "default");
     expect(group?.files).toHaveLength(1);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+  it("sends the path split into segments and clones them in snapshots", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    const path = join(tmp, "a.md");
+    await writeFile(path, "# A\n");
+    const entry = state.addFile(path, "default");
+    const expected = path.split(sep).filter((s) => s !== "");
+    expect(entry.segments).toEqual(expected);
+    state.listGroups()[0]!.files[0]!.segments!.reverse();
+    state.snapshotGroup("default")!.files[0]!.segments!.length = 0;
+    expect(state.findFile(entry.id, "default")?.segments).toEqual(expected);
+    const uploaded = state.addUploadedFile("u.md", "# U", "default");
+    expect("segments" in uploaded).toBe(false);
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("follows symlinked directories when expanding a recursive pattern", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    const target = join(tmp, "outbound", "task");
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "existing.md"), "# Existing");
+    await mkdir(join(tmp, "pending"));
+    if (
+      (await trySymlink(target, join(tmp, "pending", "task"))) &&
+      (await trySymlink(target, join(tmp, "pending", "task-copy")))
+    ) {
+      const entries = await state.addPattern(
+        join(tmp, "**", "*.md"),
+        "default",
+      );
+      expect(entries.map((e) => e.path).sort()).toEqual(
+        [
+          join(target, "existing.md"),
+          join(tmp, "pending", "task", "existing.md"),
+          join(tmp, "pending", "task-copy", "existing.md"),
+        ].sort(),
+      );
+      // Every alias stays its own entry, identified by its own path.
+      expect(new Set(entries.map((e) => e.id)).size).toBe(3);
+    }
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("does not loop on a symlink back to an ancestor of a recursive pattern", async () => {
+    const state = new State({ fileChangeDebounceMs: 0 });
+    await mkdir(join(tmp, "nested"));
+    const note = join(tmp, "nested", "note.md");
+    await writeFile(note, "# Note");
+    if (await trySymlink(tmp, join(tmp, "nested", "back"))) {
+      const entries = await state.addPattern(
+        join(tmp, "**", "*.md"),
+        "default",
+      );
+      expect(entries.map((e) => e.path)).toEqual([note]);
+      const priv = state as unknown as StateInternals;
+      expect([...priv.watchedDirs.keys()].sort()).toEqual(
+        [tmp, join(tmp, "nested")].sort(),
+      );
+    }
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("releases the watch on a linked directory whose target is gone", async () => {
+    const state = new State({ fileChangeDebounceMs: 0 });
+    const target = join(tmp, "target");
+    await mkdir(target);
+    await mkdir(join(tmp, "docs"));
+    const link = join(tmp, "docs", "linked");
+    if (await trySymlink(target, link)) {
+      const pattern = join(tmp, "docs", "**", "*.md");
+      await state.addPattern(pattern, "default");
+      const priv = state as unknown as StateInternals;
+      expect(priv.watchedDirs.get(link)).toBe(1);
+
+      // The link now dangles, so the walk can no longer classify it; it must
+      // still be released rather than kept watched forever.
+      await rm(target, { recursive: true });
+      state.removePattern(pattern, "default");
+      await waitUntil(() => priv.watchedDirs.size === 0);
+      expect([...priv.watchedDirs.keys()]).toEqual([]);
+    }
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("does not watch a dangling symlink as a directory", async () => {
+    const state = new State({ fileChangeDebounceMs: 0 });
+    await mkdir(join(tmp, "docs"));
+    const broken = join(tmp, "docs", "broken");
+    if (await trySymlink(join(tmp, "missing"), broken)) {
+      await state.addPattern(join(tmp, "docs", "**", "*.md"), "default");
+      const priv = state as unknown as StateInternals;
+      expect([...priv.watchedDirs.keys()]).toEqual([join(tmp, "docs")]);
+    }
+    state.closeAllSubscribers();
+    await state.closeBackup();
+  });
+
+  it("matches files inside a directory linked into a newly created tree", async () => {
+    const state = new State({ fileChangeDebounceMs: 0, disableWatcher: true });
+    await mkdir(join(tmp, "docs"));
+    await state.addPattern(join(tmp, "docs", "**", "*.md"), "default");
+    const target = join(tmp, "elsewhere");
+    await mkdir(target);
+    await writeFile(join(target, "inner.md"), "# Inner");
+    const created = join(tmp, "docs", "new");
+    await mkdir(created);
+    if (await trySymlink(target, join(created, "linked"))) {
+      const priv = state as unknown as StateInternals;
+      await priv.handleCreateForGlobs(created);
+      const paths = state.listGroups()[0]?.files.map((f) => f.path);
+      expect(paths).toEqual([join(created, "linked", "inner.md")]);
+    }
     state.closeAllSubscribers();
     await state.closeBackup();
   });

@@ -1,7 +1,12 @@
 export interface FileEntry {
   name: string;
   id: string;
+  // OS-native absolute path: the SPA's tooltip and copy-path value, and what
+  // the CLI echoes in its --json output.
   path: string;
+  // path split into its components, so the SPA's tree never has to know
+  // which separator the server's OS uses. Absent for uploaded files.
+  segments?: string[];
   title?: string;
   uploaded?: boolean;
   content?: string;

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { headingIdFromHash } from "../utils/jumpToHeading";
+import { anchorScroll, visibleTop } from "../utils/scrollAnchor";
 
 export const SCROLL_SESSION_KEY = "yome-scroll-context";
 
@@ -10,6 +18,17 @@ interface ScrollContext {
   url: string;
 }
 
+// A saved position in sessionStorage is not proof of a reload: beforeunload also
+// saves it when the tab leaves yome for another site, and it survives until the
+// tab comes back. Only a reload or a history traversal returns to the place it
+// was saved from.
+function isReloadOrHistoryTraversal(): boolean {
+  const [nav] = performance.getEntriesByType(
+    "navigation",
+  ) as PerformanceNavigationTiming[];
+  return nav?.type === "reload" || nav?.type === "back_forward";
+}
+
 export function useScrollRestoration(
   scrollContainer: HTMLElement | null,
   activeHeadingId: string | null,
@@ -18,6 +37,9 @@ export function useScrollRestoration(
   const savedContextRef = useRef<ScrollContext | null>(null);
   const pendingRestoreRef = useRef(false);
   const sessionRestoredRef = useRef(false);
+  // Captured at mount because the URL sync in App may rewrite the location (and
+  // drop the hash) before the first content render.
+  const [initialHash] = useState(() => headingIdFromHash(window.location.hash));
 
   // Single ref object for stable access in beforeunload and captureScrollPosition
   const latestRef = useRef({ scrollContainer, activeHeadingId, activeFileId });
@@ -67,18 +89,22 @@ export function useScrollRestoration(
     const sc = latestRef.current.scrollContainer;
     if (!sc) return;
 
-    if (ctx.headingId) {
-      const headingEl = document.getElementById(ctx.headingId);
-      if (headingEl) {
-        const currentOffset =
-          headingEl.getBoundingClientRect().top -
-          sc.getBoundingClientRect().top;
-        sc.scrollTop += currentOffset - ctx.relativeOffset;
-        return;
-      }
+    const headingEl = ctx.headingId
+      ? document.getElementById(ctx.headingId)
+      : null;
+    if (headingEl) {
+      sc.scrollTop +=
+        headingEl.getBoundingClientRect().top -
+        sc.getBoundingClientRect().top -
+        ctx.relativeOffset;
+    } else {
+      sc.scrollTop = ctx.rawScrollTop;
     }
 
-    sc.scrollTop = ctx.rawScrollTop;
+    // The saved heading is only the one the reader was in, and it is often above
+    // the viewport. Hold what is actually on screen instead.
+    const top = visibleTop(sc);
+    if (top) anchorScroll(sc, top.el, top.offset);
   }, []);
 
   const onContentRendered = useCallback(() => {
@@ -103,19 +129,37 @@ export function useScrollRestoration(
     // Path B: Full page reload (sessionStorage-based, one-shot)
     if (sessionRestoredRef.current) return;
     sessionRestoredRef.current = true;
+    let restored = false;
     try {
       const stored = sessionStorage.getItem(SCROLL_SESSION_KEY);
       if (stored) {
         const ctx: ScrollContext = JSON.parse(stored);
         sessionStorage.removeItem(SCROLL_SESSION_KEY);
-        if (ctx.fileId === fileId && ctx.url === window.location.pathname) {
+        if (
+          ctx.fileId === fileId &&
+          ctx.url === window.location.pathname &&
+          (!initialHash || isReloadOrHistoryTraversal())
+        ) {
           restoreFromContext(ctx);
+          restored = true;
         }
       }
     } catch {
       // ignore
     }
-  }, [restoreFromContext]);
+
+    // On a reload the saved position wins over the URL hash. The hash stays in
+    // the URL after a table-of-contents click and goes stale as the reader
+    // scrolls, so preferring it would undo every reload. A fresh navigation to a
+    // deep link still lands on its heading.
+    if (!restored && initialHash) {
+      const sc = latestRef.current.scrollContainer;
+      const headingEl = document.getElementById(initialHash);
+      if (sc && headingEl) {
+        anchorScroll(sc, headingEl);
+      }
+    }
+  }, [restoreFromContext, initialHash]);
 
   // Capture scroll position before any page unload
   useEffect(() => {

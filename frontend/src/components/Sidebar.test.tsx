@@ -53,6 +53,31 @@ beforeEach(() => {
 });
 
 describe("Sidebar", () => {
+  it("keeps the pointer-only sortable rows out of the keyboard tab order", () => {
+    const { container } = render(
+      <Sidebar
+        groups={groups}
+        activeGroup="default"
+        activeFileId={null}
+        onFileSelect={() => {}}
+        onFilesReorder={() => {}}
+        viewMode="flat"
+        showTitle={false}
+        searchQuery={null}
+        onSearchQueryChange={() => {}}
+      />,
+    );
+    // Reordering has no keyboard sensor, so the row wrapper must not be
+    // announced (or tabbed to) as a sortable button: the link and the More
+    // actions toggle inside it are the row's only Tab stops.
+    expect(
+      container.querySelector('[aria-roledescription="sortable"]'),
+    ).toBeNull();
+    expect(container.querySelector('div[role="button"]')).toBeNull();
+    expect(container.querySelector("div[tabindex]")).toBeNull();
+    expect(screen.getAllByRole("link")).toHaveLength(2);
+  });
+
   it("renders files for the active group", () => {
     render(
       <Sidebar

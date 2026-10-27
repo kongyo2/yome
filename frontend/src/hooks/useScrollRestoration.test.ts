@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import {
   useScrollRestoration,
@@ -22,6 +22,12 @@ function makeContainer(scrollTop = 0): HTMLDivElement {
   return el;
 }
 
+function mockNavigationType(type: NavigationTimingType) {
+  vi.spyOn(performance, "getEntriesByType").mockReturnValue([
+    { type } as PerformanceNavigationTiming,
+  ]);
+}
+
 function addHeading(id: string, topOffset: number) {
   const el = document.createElement("h2");
   el.id = id;
@@ -42,11 +48,15 @@ function addHeading(id: string, topOffset: number) {
 
 beforeEach(() => {
   sessionStorage.clear();
+  window.history.replaceState(null, "", "/");
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   document.body.innerHTML = "";
   sessionStorage.clear();
+  window.history.replaceState(null, "", "/");
 });
 
 describe("useScrollRestoration", () => {
@@ -93,6 +103,61 @@ describe("useScrollRestoration", () => {
 
       // scrollTop should be adjusted: 0 + (150 - 120) = 30
       expect(container.scrollTop).toBe(30);
+    });
+
+    it("holds the block on screen rather than the saved heading above it", () => {
+      // WebKit: no native scroll anchoring, so the restore holds the position itself.
+      vi.stubGlobal("CSS", { supports: () => false });
+      let resize: (() => void) | null = null;
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(cb: () => void) {
+            resize = cb;
+          }
+          observe() {}
+          disconnect() {}
+        },
+      );
+      const sc = document.createElement("div");
+      const article = document.createElement("article");
+      sc.appendChild(article);
+      document.body.appendChild(sc);
+      sc.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+      // Positions within the content, so their place on screen follows scrollTop.
+      const layout = { heading: 1000, block: 1400 };
+      const heading = document.createElement("h2");
+      heading.id = "section-3";
+      heading.getBoundingClientRect = () =>
+        ({
+          top: layout.heading - sc.scrollTop,
+          bottom: layout.heading + 30 - sc.scrollTop,
+        }) as DOMRect;
+      const block = document.createElement("p");
+      block.getBoundingClientRect = () =>
+        ({
+          top: layout.block - sc.scrollTop,
+          bottom: layout.block + 400 - sc.scrollTop,
+        }) as DOMRect;
+      article.append(heading, block);
+      // The reader is deep in the section: its heading is 300px above the viewport.
+      sc.scrollTop = 1300;
+
+      const { result } = renderHook(() =>
+        useScrollRestoration(sc, "section-3", "abc"),
+      );
+      act(() => {
+        result.current.captureScrollPosition();
+      });
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      // An image between the heading and the visible block finishes loading.
+      layout.block += 190;
+      resize!();
+
+      expect(block.getBoundingClientRect().top).toBe(100);
     });
   });
 
@@ -273,6 +338,172 @@ describe("useScrollRestoration", () => {
         result.current.onContentRendered();
       });
       expect(container.scrollTop).toBe(0);
+    });
+  });
+
+  describe("URL hash deep link", () => {
+    it("scrolls to the heading named in the URL hash on first render", () => {
+      window.history.replaceState(null, "", "/#section-3");
+      const container = makeContainer(0);
+      addHeading("section-3", 120);
+
+      const { result } = renderHook(
+        ({ sc, headingId, fileId }) =>
+          useScrollRestoration(sc, headingId, fileId),
+        {
+          initialProps: {
+            sc: container as HTMLElement | null,
+            headingId: null as string | null,
+            fileId: "file1" as string | null,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      // Heading sits 120px below the container top, so it lands at the top.
+      expect(container.scrollTop).toBe(120);
+    });
+
+    it("yields to a saved scroll position from a reload of the same file", () => {
+      window.history.replaceState(null, "", "/#section-3");
+      mockNavigationType("reload");
+      const container = makeContainer(0);
+      addHeading("section-3", 90);
+
+      sessionStorage.setItem(
+        SCROLL_SESSION_KEY,
+        JSON.stringify({
+          headingId: null,
+          relativeOffset: 0,
+          rawScrollTop: 750,
+          fileId: "file1",
+          url: "/",
+        }),
+      );
+
+      const { result } = renderHook(
+        ({ sc, headingId, fileId }) =>
+          useScrollRestoration(sc, headingId, fileId),
+        {
+          initialProps: {
+            sc: container as HTMLElement | null,
+            headingId: null as string | null,
+            fileId: "file1" as string | null,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      expect(container.scrollTop).toBe(750);
+      expect(sessionStorage.getItem(SCROLL_SESSION_KEY)).toBeNull();
+    });
+
+    it("scrolls to the hash on a fresh navigation despite a saved position for the same file", () => {
+      window.history.replaceState(null, "", "/#section-3");
+      mockNavigationType("navigate");
+      const container = makeContainer(0);
+      addHeading("section-3", 90);
+
+      sessionStorage.setItem(
+        SCROLL_SESSION_KEY,
+        JSON.stringify({
+          headingId: null,
+          relativeOffset: 0,
+          rawScrollTop: 750,
+          fileId: "file1",
+          url: "/",
+        }),
+      );
+
+      const { result } = renderHook(
+        ({ sc, headingId, fileId }) =>
+          useScrollRestoration(sc, headingId, fileId),
+        {
+          initialProps: {
+            sc: container as HTMLElement | null,
+            headingId: null as string | null,
+            fileId: "file1" as string | null,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      expect(container.scrollTop).toBe(90);
+      expect(sessionStorage.getItem(SCROLL_SESSION_KEY)).toBeNull();
+    });
+
+    it("scrolls to the hash when the saved position belongs to another file", () => {
+      window.history.replaceState(null, "", "/#section-3");
+      const container = makeContainer(0);
+      addHeading("section-3", 90);
+
+      sessionStorage.setItem(
+        SCROLL_SESSION_KEY,
+        JSON.stringify({
+          headingId: null,
+          relativeOffset: 0,
+          rawScrollTop: 750,
+          fileId: "other-file",
+          url: "/",
+        }),
+      );
+
+      const { result } = renderHook(
+        ({ sc, headingId, fileId }) =>
+          useScrollRestoration(sc, headingId, fileId),
+        {
+          initialProps: {
+            sc: container as HTMLElement | null,
+            headingId: null as string | null,
+            fileId: "file1" as string | null,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      expect(container.scrollTop).toBe(90);
+    });
+
+    it("applies the hash only on the first render", () => {
+      window.history.replaceState(null, "", "/#section-3");
+      const container = makeContainer(0);
+      addHeading("section-3", 90);
+
+      const { result } = renderHook(
+        ({ sc, headingId, fileId }) =>
+          useScrollRestoration(sc, headingId, fileId),
+        {
+          initialProps: {
+            sc: container as HTMLElement | null,
+            headingId: null as string | null,
+            fileId: "file1" as string | null,
+          },
+        },
+      );
+
+      act(() => {
+        result.current.onContentRendered();
+      });
+      expect(container.scrollTop).toBe(90);
+
+      container.scrollTop = 400;
+      act(() => {
+        result.current.onContentRendered();
+      });
+
+      expect(container.scrollTop).toBe(400);
     });
   });
 

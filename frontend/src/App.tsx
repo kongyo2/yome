@@ -34,6 +34,7 @@ import {
   useScrollRestoration,
   SCROLL_SESSION_KEY,
 } from "./hooks/useScrollRestoration";
+import { useHashNavigation } from "./hooks/useHashNavigation";
 import type { FileEntry, Group, SearchResult } from "./hooks/useApi";
 import {
   fetchGroups,
@@ -54,6 +55,7 @@ import {
 } from "./utils/groups";
 import { isMarkdownFile } from "./utils/filetype";
 import { formatFileLabel } from "./utils/fileLabel";
+import { jumpToHeading } from "./utils/jumpToHeading";
 import { prefetchRenderers } from "./utils/lazy-render";
 import {
   readStorage,
@@ -122,13 +124,11 @@ export function App() {
   const [pendingSearchHeading, setPendingSearchHeading] = useState<
     string | null
   >(null);
-  // Landing directly on a canonical ?file=…#heading URL (shared link, reload)
-  // must scroll to the heading once the async content renders — the browser's
-  // native hash jump fires before the target element exists.
-  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(() => {
-    if (!parseFileIdFromSearch(window.location.search)) return null;
-    return window.location.hash.slice(1) || null;
-  });
+  // A cross-file link with a fragment (api.md#auth) opened in place lands on
+  // its target once that file renders. The URL's own hash on load is handled
+  // by useScrollRestoration (a reload keeps its saved position instead), and
+  // history traversals by useHashNavigation.
+  const [pendingAnchorId, setPendingAnchorId] = useState<string | null>(null);
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>(() =>
     readStorageRecord<ViewMode>(VIEWMODE_STORAGE_KEY),
   );
@@ -290,12 +290,13 @@ export function App() {
       loadGroups();
       return;
     }
+    // The fragment stays in the rewritten URL; useScrollRestoration captured it
+    // at mount and lands on it once the resolved file renders.
     const fragment = window.location.hash.slice(1);
     openRelativeFile(group, rel.from, rel.open)
       .then((entry) => {
         relativeOpen.current = null;
         setInitialFileId(entry.id);
-        setPendingAnchorId(fragment || null);
         window.history.replaceState(
           null,
           "",
@@ -329,12 +330,11 @@ export function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      const fileId = parseFileIdFromSearch(window.location.search);
       setActiveGroup(parseGroupFromPath(window.location.pathname));
-      setActiveFileId(fileId);
-      // Re-arm the anchor scroll for history entries that carry a hash, so
-      // Back/Forward lands on the linked section after the content re-renders.
-      setPendingAnchorId(fileId ? window.location.hash.slice(1) || null : null);
+      setActiveFileId(parseFileIdFromSearch(window.location.search));
+      // useHashNavigation lands the traversal on its hash's heading; an anchor
+      // still pending from an in-place link open must not land instead.
+      setPendingAnchorId(null);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -536,27 +536,23 @@ export function App() {
 
   const activeHeadingId = useActiveHeading(headingIds, scrollContainer);
 
-  const { captureScrollPosition, onContentRendered } = useScrollRestoration(
+  const { captureScrollPosition, onContentRendered: restoreScrollOnRender } =
+    useScrollRestoration(scrollContainer, activeHeadingId, activeFileId);
+
+  const { onContentRendered: applyHashOnRender } = useHashNavigation(
     scrollContainer,
-    activeHeadingId,
+    activeGroup,
     activeFileId,
   );
 
   const handleViewerContentRendered = useCallback(() => {
     setFirstContentRendered(true);
-    onContentRendered();
-  }, [onContentRendered]);
+    restoreScrollOnRender();
+    applyHashOnRender();
+  }, [restoreScrollOnRender, applyHashOnRender]);
 
   const handleHeadingClick = useCallback((id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const reduced = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-    el.scrollIntoView({
-      behavior: reduced ? "auto" : "smooth",
-      block: "start",
-    });
+    jumpToHeading(id);
   }, []);
 
   const handleZoom = useCallback((content: ZoomContent) => {
