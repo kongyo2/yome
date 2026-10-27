@@ -43,6 +43,18 @@ describe("FileContextMenu", () => {
     ).toHaveFocus();
   });
 
+  it("closes on an Escape pressed elsewhere without taking focus", async () => {
+    const onToggle = renderMenu(true);
+    render(<input aria-label="Search files" />);
+    const search = screen.getByRole("textbox", { name: "Search files" });
+    search.focus();
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(onToggle).toHaveBeenCalledWith("aaa11111");
+    expect(search).toHaveFocus();
+  });
+
   it("ignores Escape while closed", async () => {
     const onToggle = renderMenu(false);
 

@@ -46,18 +46,23 @@ export function FileContextMenu({ file, menu, actions }: FileContextMenuProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const { onToggle } = actions;
 
-  // Focus goes back to the toggle because the focused menu item unmounts with the
-  // menu, which would drop a keyboard user to <body>.
+  // Focus goes back to the toggle when it was in the menu, because the focused
+  // menu item unmounts with the menu, which would drop a keyboard user to
+  // <body>. An Escape pressed elsewhere (the search box, say) still closes the
+  // menu but leaves focus where it is.
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      const fromMenu =
+        e.target instanceof Node &&
+        menu.menuRef.current?.contains(e.target) === true;
       onToggle(file.id);
-      buttonRef.current?.focus();
+      if (fromMenu) buttonRef.current?.focus();
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onToggle, file.id]);
+  }, [isOpen, onToggle, file.id, menu.menuRef]);
 
   // Measured only on open, while the menu is still at its default `top-full`
   // position: re-running this after `dropUp` flips would make it oscillate.

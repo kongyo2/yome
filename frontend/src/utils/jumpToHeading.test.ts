@@ -7,6 +7,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
   window.history.replaceState(null, "", "/");
 });
@@ -27,6 +28,22 @@ describe("jumpToHeading", () => {
       block: "start",
     });
     expect(window.location.hash).toBe("#getting-started");
+  });
+
+  it("adds no history entry when the hash already names the heading", () => {
+    const heading = document.createElement("h2");
+    heading.id = "使い方";
+    const scrollIntoView = vi.fn();
+    heading.scrollIntoView = scrollIntoView;
+    document.body.appendChild(heading);
+    const pushState = vi.spyOn(window.history, "pushState");
+
+    jumpToHeading("使い方");
+    jumpToHeading("使い方");
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(pushState).toHaveBeenCalledTimes(1);
+    expect(headingIdFromHash(window.location.hash)).toBe("使い方");
   });
 
   it("does nothing and returns false when the heading is missing", () => {

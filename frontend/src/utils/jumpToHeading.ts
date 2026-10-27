@@ -18,9 +18,14 @@ export function scrollToHeading(id: string): boolean {
 }
 
 // Scroll to a heading by id and reflect it in the URL hash so the location can
-// be copied as a deep link, matching how in-document anchor links behave.
+// be copied as a deep link, matching how in-document anchor links behave. Like
+// a link to the current fragment, jumping to the heading the hash already
+// names adds no history entry: Back would otherwise land on the same URL and
+// seem to do nothing.
 export function jumpToHeading(id: string): boolean {
   if (!scrollToHeading(id)) return false;
-  window.history.pushState(null, "", `#${id}`);
+  if (headingIdFromHash(window.location.hash) !== id) {
+    window.history.pushState(null, "", `#${id}`);
+  }
   return true;
 }
