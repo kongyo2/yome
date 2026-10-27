@@ -39,13 +39,13 @@
   "scripts": {
     "build": "npm run build:frontend && npm run build:server",
     "build:frontend": "cd frontend && vite build",
-    "build:server": "tsc -p tsconfig.build.json --noEmit && node scripts/build-server.mjs && node scripts/post-build.mjs",
+    "build:server": "tsrs -p tsconfig.build.json --noEmit && node scripts/build-server.mjs && node scripts/post-build.mjs",
     "dev": "npm run build:frontend && node --import tsx src/bin/yome.ts --foreground --port 16275",
     "dev:frontend": "cd frontend && vite",
     "test": "vitest run && cd frontend && vitest run",
     "test:server": "vitest run",
     "test:frontend": "cd frontend && vitest run",
-    "typecheck": "tsc --noEmit && cd frontend && tsc --noEmit",
+    "typecheck": "tsrs --noEmit && cd frontend && tsrs --noEmit",
     "lint": "oxlint --silent",
     "lint:strict": "oxlint --deny-warnings",
     "check:file": "oxlint",
@@ -66,8 +66,8 @@
     "esbuild": "^0.28.2",
     "oxlint": "^1.81.0",
     "prettier": "^3.9.6",
+    "tsrs": "0.20.0-ts7.1.0-beta",
     "tsx": "^4.23.13",
-    "typescript": "~7.0.2",
     "vitest": "^4.1.11"
   }
 }

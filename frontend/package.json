@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsrs -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -52,7 +52,7 @@
     "oxlint": "^1.81.0",
     "prettier": "^3.9.6",
     "tailwindcss": "^4.3.3",
-    "typescript": "~7.0.2",
+    "tsrs": "0.20.0-ts7.1.0-beta",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
   }

@@ -29,10 +29,10 @@ jobs:
         run: cd frontend && npm ci
 
       - name: Type check (root)
-        run: npx tsc --noEmit
+        run: npx tsrs --noEmit
 
       - name: Type check (frontend)
-        run: cd frontend && npx tsc --noEmit
+        run: cd frontend && npx tsrs --noEmit
 
       - name: Lint
         run: npm run lint

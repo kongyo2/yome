@@ -34,6 +34,7 @@
 
 - 実行 (CLI): Node.js `>= 20.10.0`
 - 開発 (frontend のビルド / テスト): Node.js `^20.19.0 || >= 22.12.0` (Vite 8 の要件)
+- 型チェック (`npm run typecheck`): TypeScript 7 互換の Rust 製コンパイラ [tsrs](https://github.com/oxc-project/tsrs) を使用。ビルド済みバイナリが提供される macOS (arm64 / x64)、Linux (x64 / arm64、glibc / musl)、Windows (x64) で動作
 
 ## インストール
 

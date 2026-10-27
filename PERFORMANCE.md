@@ -41,7 +41,7 @@ v1.8.0 は動作互換を保ったままの高速化リリースです。すべ�
 - **esbuild によるバンドル化**: `dist/` を per-module の tsc 出力から、
   コード分割された少数の ESM チャンクに変更。Node が起動のたびに
   100 以上のモジュールを解決・パースするコストを排除。型検査は従来どおり
-  `tsc --noEmit` で実施。
+  `tsc --noEmit` で実施 (v1.10.0 以降は tsrs の `tsrs --noEmit`)。
 - **遅延ロード**: HTTP クライアント / サーバー本体 (chokidar 含む) /
   `open` / `node:crypto` / `node:readline` / picomatch を、実際に使う
   実行パスでだけ動的 import。`yome file.md` のような日常操作は

@@ -34,6 +34,7 @@ It faithfully follows the behavior of the original Go implementation while being
 
 - Runtime (CLI): Node.js `>= 20.10.0`
 - Development (building / testing the frontend): Node.js `^20.19.0 || >= 22.12.0` (required by Vite 8)
+- Type checking (`npm run typecheck`): uses [tsrs](https://github.com/oxc-project/tsrs), a TypeScript 7–compatible compiler written in Rust. Runs where it ships prebuilt binaries: macOS (arm64 / x64), Linux (x64 / arm64, glibc / musl) and Windows (x64)
 
 ## Installation
 
